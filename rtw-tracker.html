@@ -419,29 +419,30 @@ function EmpModal({emp,onClose,onSave,onArchive,rtwTypes,departments,empStatuses
     await onSave(out);setSaved(true);setSaving(false);
     setTimeout(()=>{setSaved(false);onClose();},700);
   };
-  const Sel=({label,field,opts,hint})=>(
-    <div style={{marginBottom:16}}>
-      <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
-      {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
-      <select value={form[field]||""} onChange={e=>set(field,e.target.value)} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
-        <option value="">— Select —</option>
-        {opts.map(o=><option key={o}>{o}</option>)}
-      </select>
-    </div>
-  );
-  const Inp=({label,field,type="text",hint,onChange})=>(
-    <div style={{marginBottom:16}}>
-      <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
-      {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
-      <input type={type} value={form[field]||""} onChange={onChange||(e=>set(field,e.target.value))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
-    </div>
-  );
-  const Sec=({title,children})=>(
-    <div style={{marginBottom:20}}>
-      <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>{title}</div>
-      {children}
-    </div>
-  );
+// ── Stable form field components (defined OUTSIDE EmpModal to prevent remount on keystroke) ──
+const Inp=({label,field,type,hint,onChange,form,set})=>(
+  <div style={{marginBottom:16}}>
+    <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
+    {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
+    <input type={type||"text"} value={form[field]||""} onChange={onChange||(e=>set(field,e.target.value))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+  </div>
+);
+const Sel=({label,field,opts,hint,form,set})=>(
+  <div style={{marginBottom:16}}>
+    <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
+    {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
+    <select value={form[field]||""} onChange={e=>set(field,e.target.value)} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+      <option value="">— Select —</option>
+      {opts.map(o=><option key={o}>{o}</option>)}
+    </select>
+  </div>
+);
+const Sec=({title,children})=>(
+  <div style={{marginBottom:20}}>
+    <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>{title}</div>
+    {children}
+  </div>
+);
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.55)",zIndex:150,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{width:"100%",maxWidth:620,background:"#fff",borderRadius:16,boxShadow:"0 25px 60px rgba(0,0,0,0.2)",maxHeight:"93vh",overflowY:"auto",display:"flex",flexDirection:"column"}}>
@@ -462,17 +463,17 @@ function EmpModal({emp,onClose,onSave,onArchive,rtwTypes,departments,empStatuses
         <div style={{padding:"20px 24px",flex:1}}>
           <Sec title="Personal & Employment">
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
-              <div style={{gridColumn:"1/-1"}}><Inp label="Full Name" field="name"/></div>
-              <Sel label="Department" field="department" opts={departments}/>
-              <Sel label="Employment Status" field="employmentStatus" opts={empStatuses}/>
-              <div style={{gridColumn:"1/-1"}}><Inp label="Staff Email" field="email" type="email"/></div>
-              <Inp label="Date Added" field="dateAdded" type="date"/>
+              <div style={{gridColumn:"1/-1"}}><Inp label="Full Name" field="name" form={form} set={set}/></div>
+              <Sel label="Department" field="department" opts={departments} form={form} set={set}/>
+              <Sel label="Employment Status" field="employmentStatus" opts={empStatuses} form={form} set={set}/>
+              <div style={{gridColumn:"1/-1"}}><Inp label="Staff Email" field="email" type="email" form={form} set={set}/></div>
+              <Inp label="Date Added" field="dateAdded" type="date" form={form} set={set}/>
             </div>
           </Sec>
           <Sec title="Right to Work">
-            <Sel label="RTW Type" field="rtwType" opts={rtwTypes}/>
-            <Inp label="Visa / RTW Sub-type" field="visaStatus" hint="e.g. Graduate Visa, Dependent Visa, Student 20hr restricted"/>
-            {hasExpiry&&<Inp label="Visa Expiry Date" field="visaExpiry" type="date"/>}
+            <Sel label="RTW Type" field="rtwType" opts={rtwTypes} form={form} set={set}/>
+            <Inp label="Visa / RTW Sub-type" field="visaStatus" hint="e.g. Graduate Visa, Dependent Visa, Student 20hr restricted" form={form} set={set}/>
+            {hasExpiry&&<Inp label="Visa Expiry Date" field="visaExpiry" type="date" form={form} set={set}/>}
             {hasExpiry&&days!==null&&(
               <div style={{padding:"11px 14px",background:c.bg,border:`1px solid ${c.bd}`,borderRadius:10,marginBottom:16,fontSize:13,color:c.tx,fontWeight:500}}>
                 {days<0?`⚠️ EXPIRED ${Math.abs(days)} days ago`:days<=90?`📅 ${days} days until expiry — within reminder window`:`✅ ${days} days until expiry`}
@@ -482,9 +483,9 @@ function EmpModal({emp,onClose,onSave,onArchive,rtwTypes,departments,empStatuses
           {needsChkF&&(
             <Sec title="Visa Check Schedule">
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
-                <Inp label="Last Visa Check Date" field="lastVisaCheck" type="date" hint="Date manager last verified" onChange={e=>handleLastChk(e.target.value)}/>
+                <Inp label="Last Visa Check Date" field="lastVisaCheck" type="date" hint="Date manager last verified" onChange={e=>handleLastChk(e.target.value)} form={form} set={set}/>
                 <div>
-                  <Inp label="Next Check Date" field="nextCheckDate" type="date" hint="Auto: last check + 6 months"/>
+                  <Inp label="Next Check Date" field="nextCheckDate" type="date" hint="Auto: last check + 6 months" form={form} set={set}/>
                   {chkDays!==null&&<div style={{marginTop:-10,marginBottom:16}}><CheckChip days={chkDays}/></div>}
                 </div>
               </div>
@@ -531,7 +532,7 @@ function EmpModal({emp,onClose,onSave,onArchive,rtwTypes,departments,empStatuses
               {form.spLink&&<a href={form.spLink} target="_blank" rel="noreferrer" style={{display:"inline-block",marginTop:8,fontSize:12,color:"#1E40AF",fontWeight:600}}>🔗 Open link →</a>}
             </div>
           </Sec>
-          <Sec title="Notes"><Inp label="Comments / Notes" field="notes"/></Sec>
+          <Sec title="Notes"><Inp label="Comments / Notes" field="notes" form={form} set={set}/></Sec>
           <div style={{display:"flex",gap:10,paddingTop:4}}>
             <button onClick={save} disabled={saving} style={{flex:1,padding:"13px",background:saved?"#22C55E":saving?"#64748B":"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",transition:"background 0.3s"}}>
               {saved?"✓ Saved!":saving?"Saving…":isNew?"Add Staff Member":"Save Changes"}
