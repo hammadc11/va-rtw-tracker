@@ -461,40 +461,91 @@ const Sec=({title,children})=>(
           </div>
         </div>
         <div style={{padding:"20px 24px",flex:1}}>
-          <Sec title="Personal & Employment">
+
+          {/* Personal & Employment */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Personal & Employment</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
-              <div style={{gridColumn:"1/-1"}}><Inp label="Full Name" field="name" form={form} set={set}/></div>
-              <Sel label="Department" field="department" opts={departments} form={form} set={set}/>
-              <Sel label="Employment Status" field="employmentStatus" opts={empStatuses} form={form} set={set}/>
-              <div style={{gridColumn:"1/-1"}}><Inp label="Staff Email" field="email" type="email" form={form} set={set}/></div>
-              <Inp label="Date Added" field="dateAdded" type="date" form={form} set={set}/>
+              <div style={{gridColumn:"1/-1",marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Full Name</label>
+                <input value={form.name||""} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Department</label>
+                <select value={form.department||""} onChange={e=>setForm(f=>({...f,department:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                  {departments.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Employment Status</label>
+                <select value={form.employmentStatus||""} onChange={e=>setForm(f=>({...f,employmentStatus:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                  {empStatuses.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div style={{gridColumn:"1/-1",marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Staff Email</label>
+                <input type="email" value={form.email||""} onChange={e=>setForm(f=>({...f,email:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Date Added</label>
+                <input type="date" value={form.dateAdded||""} onChange={e=>setForm(f=>({...f,dateAdded:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
             </div>
-          </Sec>
-          <Sec title="Right to Work">
-            <Sel label="RTW Type" field="rtwType" opts={rtwTypes} form={form} set={set}/>
-            <Inp label="Visa / RTW Sub-type" field="visaStatus" hint="e.g. Graduate Visa, Dependent Visa, Student 20hr restricted" form={form} set={set}/>
-            {hasExpiry&&<Inp label="Visa Expiry Date" field="visaExpiry" type="date" form={form} set={set}/>}
+          </div>
+
+          {/* Right to Work */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Right to Work</div>
+            <div style={{marginBottom:16}}>
+              <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>RTW Type</label>
+              <select value={form.rtwType||""} onChange={e=>setForm(f=>({...f,rtwType:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                {rtwTypes.map(o=><option key={o}>{o}</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:16}}>
+              <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Visa / RTW Sub-type</label>
+              <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>e.g. Graduate Visa, Dependent Visa, Student 20hr restricted</div>
+              <input value={form.visaStatus||""} onChange={e=>setForm(f=>({...f,visaStatus:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+            </div>
+            {hasExpiry&&(
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Visa Expiry Date</label>
+                <input type="date" value={form.visaExpiry||""} onChange={e=>setForm(f=>({...f,visaExpiry:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+            )}
             {hasExpiry&&days!==null&&(
               <div style={{padding:"11px 14px",background:c.bg,border:`1px solid ${c.bd}`,borderRadius:10,marginBottom:16,fontSize:13,color:c.tx,fontWeight:500}}>
                 {days<0?`⚠️ EXPIRED ${Math.abs(days)} days ago`:days<=90?`📅 ${days} days until expiry — within reminder window`:`✅ ${days} days until expiry`}
               </div>
             )}
-          </Sec>
+          </div>
+
+          {/* Visa Check Schedule */}
           {needsChkF&&(
-            <Sec title="Visa Check Schedule">
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Visa Check Schedule</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
-                <Inp label="Last Visa Check Date" field="lastVisaCheck" type="date" hint="Date manager last verified" onChange={e=>handleLastChk(e.target.value)} form={form} set={set}/>
-                <div>
-                  <Inp label="Next Check Date" field="nextCheckDate" type="date" hint="Auto: last check + 6 months" form={form} set={set}/>
-                  {chkDays!==null&&<div style={{marginTop:-10,marginBottom:16}}><CheckChip days={chkDays}/></div>}
+                <div style={{marginBottom:16}}>
+                  <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Last Visa Check Date</label>
+                  <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>Date manager last verified</div>
+                  <input type="date" value={form.lastVisaCheck||""} onChange={e=>handleLastChk(e.target.value)} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+                </div>
+                <div style={{marginBottom:16}}>
+                  <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Next Check Date</label>
+                  <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>Auto: last check + 6 months</div>
+                  <input type="date" value={form.nextCheckDate||""} onChange={e=>setForm(f=>({...f,nextCheckDate:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+                  {chkDays!==null&&<div style={{marginTop:6}}><CheckChip days={chkDays}/></div>}
                 </div>
               </div>
               <div style={{padding:"10px 14px",background:"#F0F9FF",border:"1px solid #BAE6FD",borderRadius:8,fontSize:12,color:"#0369A1",marginBottom:4}}>
                 💡 Next Check Date auto-populates as 6 months from Last Visa Check. Override manually if needed.
               </div>
-            </Sec>
+            </div>
           )}
-          <Sec title="RTW Documents — Passport / Visa / BRP">
+
+          {/* Documents */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>RTW Documents — Passport / Visa / BRP</div>
             {form.docUrl&&(
               <div style={{padding:"14px 16px",background:"#F0FDF4",border:"1px solid #86EFAC",borderRadius:12,marginBottom:16}}>
                 <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -528,11 +579,17 @@ const Sec=({title,children})=>(
             {uploadErr&&<div style={{padding:"10px 14px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,fontSize:12,color:"#DC2626",marginBottom:10}}>{uploadErr}</div>}
             <div style={{padding:"12px 14px",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,marginBottom:4}}>
               <div style={{fontSize:11,fontWeight:700,color:"#475569",textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Additional SharePoint / Drive Link (optional)</div>
-              <input type="url" value={form.spLink||""} onChange={e=>set("spLink",e.target.value)} placeholder="https://…" style={{width:"100%",padding:"8px 10px",border:"1px solid #E2E8F0",borderRadius:6,fontSize:12,boxSizing:"border-box",color:"#334155"}}/>
+              <input type="url" value={form.spLink||""} onChange={e=>setForm(f=>({...f,spLink:e.target.value}))} placeholder="https://…" style={{width:"100%",padding:"8px 10px",border:"1px solid #E2E8F0",borderRadius:6,fontSize:12,boxSizing:"border-box",color:"#334155"}}/>
               {form.spLink&&<a href={form.spLink} target="_blank" rel="noreferrer" style={{display:"inline-block",marginTop:8,fontSize:12,color:"#1E40AF",fontWeight:600}}>🔗 Open link →</a>}
             </div>
-          </Sec>
-          <Sec title="Notes"><Inp label="Comments / Notes" field="notes" form={form} set={set}/></Sec>
+          </div>
+
+          {/* Notes */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Notes</div>
+            <textarea value={form.notes||""} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} rows={3} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box",resize:"vertical"}}/>
+          </div>
+
           <div style={{display:"flex",gap:10,paddingTop:4}}>
             <button onClick={save} disabled={saving} style={{flex:1,padding:"13px",background:saved?"#22C55E":saving?"#64748B":"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",transition:"background 0.3s"}}>
               {saved?"✓ Saved!":saving?"Saving…":isNew?"Add Staff Member":"Save Changes"}
