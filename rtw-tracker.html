@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F8FAFC;min-height:100vh}
@@ -49,6 +50,138 @@ const DEF_RTW   = ["British Citizen","EU Settlement - ILR","ILR - Home Office","
 const DEF_DEPT  = ["Office","Field"];
 const DEF_EMPS  = ["Active","Left Employment","Not Working","On Leave","Not Started"];
 const TODAY     = new Date().toISOString().slice(0,10);
+
+// ═══════════════════════════════════════════════════════
+// EMAILJS CONFIG
+// ═══════════════════════════════════════════════════════
+const EJS_SERVICE  = "service_cu8931p";
+const EJS_TEMPLATE = "template_vd5qjnf";
+const EJS_PUBKEY   = "kI2nMevWwDgR66XSF";
+const MANAGER_EMAILS = [
+  "hcheema@visiting-angels.co.uk",
+  "pfitrzyk@visiting-angels.co.uk",
+  "mzieba@visiting-angels.co.uk",
+  "westlondon@visiting-angels.co.uk",
+];
+const TRACKER_URL = window.location.href;
+
+// Initialise EmailJS
+if(typeof emailjs !== "undefined") emailjs.init({publicKey: EJS_PUBKEY});
+
+// Send one email via EmailJS
+async function sendEmail(toEmail, params) {
+  if(typeof emailjs === "undefined") { console.warn("EmailJS not loaded"); return; }
+  try {
+    await emailjs.send(EJS_SERVICE, EJS_TEMPLATE, { to_email: toEmail, ...params });
+  } catch(e) { console.error("EmailJS error:", e); }
+}
+
+// Send reminder for one employee to appropriate recipients
+async function sendReminder(emp, daysLeft, triggerDays) {
+  const alertLabels = { 90:"90-Day Notice", 60:"60-Day Notice", 30:"30-Day Urgent", 15:"15-Day Final Alert" };
+  const messages = {
+    90: "Please ensure the visa extension application process has been started. The visa expires in 90 days.",
+    60: "A visa extension application should be in progress. The visa expires in 60 days. Please confirm the application status.",
+    30: "URGENT: The visa expires in 30 days. Immediate action is required to ensure continued right to work.",
+    15: "FINAL ALERT: The visa expires in 15 days. If an extension has not been applied for, work must cease on the expiry date.",
+  };
+  const params = {
+    employee_name: emp.name,
+    department:    emp.department,
+    rtw_type:      emp.rtwType + (emp.visaStatus ? ` — ${emp.visaStatus}` : ""),
+    visa_expiry:   new Date(emp.visaExpiry).toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"}),
+    days_remaining: String(daysLeft),
+    alert_level:   alertLabels[triggerDays] || `${triggerDays}-Day Alert`,
+    message:       messages[triggerDays] || "",
+    tracker_url:   TRACKER_URL,
+  };
+  // Managers always get all alerts
+  for(const email of MANAGER_EMAILS) {
+    await sendEmail(email, {...params, recipient_type: "manager"});
+  }
+  // Staff only get 30-day and 15-day alerts
+  if([30,15].includes(triggerDays) && emp.email) {
+    await sendEmail(emp.email, {...params, recipient_type: "staff"});
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// AUDIT LOG HELPERS
+// ═══════════════════════════════════════════════════════
+const HUMAN_LABELS = {
+  name:"Name", department:"Department", rtwType:"RTW Type", visaExpiry:"Visa Expiry",
+  visaStatus:"Visa Sub-type", employmentStatus:"Employment Status", email:"Email",
+  notes:"Notes", dateAdded:"Date Added", lastVisaCheck:"Last Visa Check",
+  nextCheckDate:"Next Check Date", docUrl:"Document URL", docName:"Document Name",
+  docStoragePath:"Document Path", spLink:"SharePoint Link",
+};
+const SKIP_AUDIT = ["lastUpdatedBy","lastUpdatedAt","docStoragePath","id"];
+
+function diffObjects(oldObj, newObj) {
+  const changes = [];
+  const keys = new Set([...Object.keys(oldObj||{}), ...Object.keys(newObj||{})]);
+  for(const k of keys) {
+    if(SKIP_AUDIT.includes(k)) continue;
+    const ov = oldObj?.[k] ?? null;
+    const nv = newObj?.[k] ?? null;
+    if(String(ov) !== String(nv)) {
+      changes.push({ field: k, label: HUMAN_LABELS[k]||k, from: ov, to: nv });
+    }
+  }
+  return changes;
+}
+
+const sbAudit = {
+  async log(employeeId, employeeName, action, changedBy, changes) {
+    try {
+      await fetch(`${REST}/rtw_audit_log`, {
+        method:"POST",
+        headers: h({"Prefer":"return=minimal"}),
+        body: JSON.stringify({
+          employee_id: employeeId||null,
+          employee_name: employeeName||"",
+          action,
+          changed_by: changedBy,
+          changes: changes||null,
+        }),
+      });
+    } catch(e) { console.warn("Audit log failed:", e); }
+  },
+  async fetch(limit=200) {
+    try {
+      const r = await fetch(`${REST}/rtw_audit_log?order=changed_at.desc&limit=${limit}`, {headers:h()});
+      if(!r.ok) return [];
+      return r.json();
+    } catch { return []; }
+  },
+};
+
+// Reminders sent tracking
+const sbReminders = {
+  async getSent() {
+    try {
+      const r = await fetch(`${REST}/rtw_reminders_sent`, {headers:h()});
+      if(!r.ok) return [];
+      return r.json();
+    } catch { return []; }
+  },
+  async markSent(employeeId, triggerDays) {
+    try {
+      await fetch(`${REST}/rtw_reminders_sent`, {
+        method:"POST",
+        headers: h({"Prefer":"resolution=merge-duplicates,return=minimal"}),
+        body: JSON.stringify({employee_id: employeeId, trigger_days: triggerDays}),
+      });
+    } catch {}
+  },
+  async clearForEmployee(employeeId) {
+    try {
+      await fetch(`${REST}/rtw_reminders_sent?employee_id=eq.${employeeId}`, {
+        method:"DELETE", headers: h({"Prefer":""}),
+      });
+    } catch {}
+  },
+};
 
 // ═══════════════════════════════════════════════════════
 // SUPABASE HELPERS
@@ -435,6 +568,8 @@ function App(){
   const [selected,setSelected]=useState(null);
   const [showNew,setShowNew]=useState(false);
   const [showLists,setShowLists]=useState(false);
+  const [auditLog,setAuditLog]=useState([]);
+  const [auditLoading,setAuditLoading]=useState(false);
 
   const loadData=useCallback(async()=>{
     setLoading(true);setDbErr("");
@@ -452,6 +587,39 @@ function App(){
 
   useEffect(()=>{if(user)loadData();},[user,loadData]);
 
+  useEffect(()=>{
+    if(tab==="audit"&&user){
+      setAuditLoading(true);
+      sbAudit.fetch(300).then(logs=>{setAuditLog(logs);setAuditLoading(false);});
+    }
+  },[tab,user]);
+
+  // ── Reminder engine — runs once on load ──────────────────
+  useEffect(()=>{
+    if(!user||employees.length===0) return;
+    const runReminders=async()=>{
+      const sent=await sbReminders.getSent();
+      const sentSet=new Set(sent.map(s=>`${s.employee_id}_${s.trigger_days}`));
+      const triggers=[90,60,30,15];
+      for(const emp of employees){
+        if(emp.employmentStatus!=="Active"||!emp.visaExpiry) continue;
+        const d=daysLeft(emp.visaExpiry);
+        if(d===null||d<0) continue;
+        for(const t of triggers){
+          if(d<=t){
+            const key=`${emp.id}_${t}`;
+            if(!sentSet.has(key)){
+              await sendReminder(emp,d,t);
+              await sbReminders.markSent(emp.id,t);
+              sentSet.add(key);
+            }
+          }
+        }
+      }
+    };
+    runReminders();
+  },[employees.length>0]);
+
   const seedDatabase=async()=>{
     setSeeding(true);setDbErr("");
     try{
@@ -465,23 +633,46 @@ function App(){
         lastUpdatedBy:"System",lastUpdatedAt:new Date().toISOString(),
       }));
       await sb.insertBulk(rows);
+      await sbAudit.log(null,"All Staff","bulk_import","System",[{field:"action",label:"Action",from:null,to:"Imported 133 staff from spreadsheet"}]);
       await loadData();
     }catch(e){setDbErr("Seed failed: "+e.message);}
     setSeeding(false);
   };
 
-  const saveEmployee=async emp=>{
+  const saveEmployee=async(emp)=>{
     try{
       const{id,...row}=emp;
-      delete row.docData;delete row.docFileName;
-      if(id===0){const created=await sb.insert(row);setEmployees(p=>[...p,created]);}
-      else{const updated=await sb.update(id,row);setEmployees(p=>p.map(e=>e.id===id?(updated||{...e,...row}):e));}
+      delete row.docData; delete row.docFileName;
+      if(id===0){
+        const created=await sb.insert(row);
+        setEmployees(p=>[...p,created]);
+        await sbAudit.log(created?.id,row.name,"created",emp.lastUpdatedBy||"Unknown",[{field:"action",label:"Action",from:null,to:"New staff member added"}]);
+      } else {
+        // Get old record for diff
+        const oldEmp=employees.find(e=>e.id===id)||{};
+        const changes=diffObjects(oldEmp,row);
+        const updated=await sb.update(id,row);
+        setEmployees(p=>p.map(e=>e.id===id?(updated||{...e,...row}):e));
+        if(changes.length>0){
+          await sbAudit.log(id,row.name,"updated",emp.lastUpdatedBy||"Unknown",changes);
+          // If visa expiry changed, clear sent reminders so they re-trigger
+          if(changes.some(c=>c.field==="visaExpiry")){
+            await sbReminders.clearForEmployee(id);
+          }
+        }
+      }
     }catch(e){alert("Save failed: "+e.message);}
   };
-  const archiveEmployee=async id=>{
-    try{await sb.del(id);setEmployees(p=>p.filter(e=>e.id!==id));}
-    catch(e){alert("Archive failed: "+e.message);}
+
+  const archiveEmployee=async(id)=>{
+    try{
+      const emp=employees.find(e=>e.id===id);
+      await sb.del(id);
+      setEmployees(p=>p.filter(e=>e.id!==id));
+      await sbAudit.log(id,emp?.name||"Unknown","archived",user?.name||"Unknown",[{field:"action",label:"Action",from:"Active","to":"Archived"}]);
+    }catch(e){alert("Archive failed: "+e.message);}
   };
+
   const saveLists=async(r,d,s)=>{
     setRtwTypes(r);setDepts(d);setEmpSts(s);
     await sbSettings.set({rtwTypes:r,departments:d,empStatuses:s});
@@ -560,6 +751,7 @@ function App(){
             <Nav id="staff" label="All Staff" icon="◎"/>
             <Nav id="reminders" label="Reminders" icon="🔔" badge={reminders.length}/>
             <Nav id="checks" label="Check Log" icon="🗓" badge={checksDue.length}/>
+            <Nav id="audit" label="Audit Log" icon="📋" badge={0}/>
           </nav>
           <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
             {loading&&<span style={{color:"#94A3B8",fontSize:12}}>Loading…</span>}
@@ -795,7 +987,67 @@ function App(){
             </div>
           </div>
         )}
-      </div>
+
+        {/* AUDIT LOG */}
+        {tab==="audit"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:22,flexWrap:"wrap",gap:12}}>
+              <div>
+                <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Audit Log</h1>
+                <p style={{color:"#64748B",margin:0,fontSize:13}}>Full history of all changes — who did what and when, with field-level detail.</p>
+              </div>
+              <button onClick={()=>{setAuditLoading(true);sbAudit.fetch(300).then(l=>{setAuditLog(l);setAuditLoading(false);});}} style={{padding:"8px 16px",background:"#F1F5F9",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,cursor:"pointer",color:"#475569",fontWeight:600}}>↻ Refresh</button>
+            </div>
+            {auditLoading?(
+              <div style={{textAlign:"center",padding:"60px",color:"#64748B",fontSize:14}}>Loading audit log…</div>
+            ):auditLog.length===0?(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"60px",textAlign:"center"}}>
+                <div style={{fontSize:36,marginBottom:12}}>📋</div>
+                <div style={{fontSize:15,fontWeight:600,color:"#0F172A",marginBottom:4}}>No audit entries yet</div>
+                <div style={{color:"#64748B",fontSize:13}}>Changes to staff records will appear here</div>
+              </div>
+            ):(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+                {auditLog.map((entry,i)=>{
+                  const actionColors={created:{bg:"#F0FDF4",bd:"#86EFAC",tx:"#166534",icon:"✚"},updated:{bg:"#EFF6FF",bd:"#93C5FD",tx:"#1E40AF",icon:"✎"},archived:{bg:"#FEF2F2",bd:"#FCA5A5",tx:"#991B1B",icon:"✕"},bulk_import:{bg:"#F5F3FF",bd:"#C4B5FD",tx:"#6D28D9",icon:"⬆"}};
+                  const ac=actionColors[entry.action]||{bg:"#F8FAFC",bd:"#E2E8F0",tx:"#64748B",icon:"·"};
+                  const changes=Array.isArray(entry.changes)?entry.changes:[];
+                  return(
+                    <div key={entry.id} style={{padding:"14px 22px",borderBottom:"1px solid #F1F5F9",background:i%2===0?"#fff":"#FAFBFC"}}>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
+                        {/* Action badge */}
+                        <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:12,background:ac.bg,border:`1px solid ${ac.bd}`,color:ac.tx,fontSize:11,fontWeight:700,flexShrink:0}}>
+                          {ac.icon} {entry.action}
+                        </span>
+                        {/* Who / what */}
+                        <div style={{flex:1,minWidth:200}}>
+                          <div style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{entry.employee_name||"—"}</div>
+                          <div style={{fontSize:12,color:"#64748B",marginTop:2}}>
+                            by <strong style={{color:"#334155"}}>{entry.changed_by}</strong> · {new Date(entry.changed_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+                          </div>
+                        </div>
+                      </div>
+                      {/* Field-level changes */}
+                      {changes.length>0&&(
+                        <div style={{marginTop:10,paddingLeft:0}}>
+                          {changes.map((ch,j)=>(
+                            <div key={j} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 10px",background:"#F8FAFC",borderRadius:6,marginBottom:4,fontSize:12,flexWrap:"wrap"}}>
+                              <span style={{color:"#7C3AED",fontWeight:600,minWidth:120}}>{ch.label}</span>
+                              <span style={{color:"#64748B",textDecoration:"line-through",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ch.from===null||ch.from===""?"(empty)":String(ch.from)}</span>
+                              <span style={{color:"#94A3B8",fontSize:10}}>→</span>
+                              <span style={{color:"#0F172A",fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ch.to===null||ch.to===""?"(empty)":String(ch.to)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>{/* end main content */}
 
       {/* MODALS */}
       {selected&&<EmpModal emp={selected} onClose={()=>setSelected(null)} onSave={saveEmployee} onArchive={archiveEmployee} rtwTypes={rtwTypes} departments={departments} empStatuses={empStatuses} user={user}/>}
