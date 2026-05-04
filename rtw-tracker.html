@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>VA West London — Right to Work Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F8FAFC;min-height:100vh}
+input,select,textarea,button{font-family:inherit}
+a{color:inherit}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#F1F5F9}
+::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ═══════════════════════════════════════════════════════
+// SUPABASE CONFIG
+// ═══════════════════════════════════════════════════════
+const SUPABASE_URL  = "https://nollsyqdvrqrtwiutirg.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vbGxzeXFkdnJxcnR3aXV0aXJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMzU4MjgsImV4cCI6MjA5MDgxMTgyOH0.B4yCRY0mzE975TKOkTtJ9WZc_YyzWDmWH7zj1q-TpaU";
+const TABLE  = "employees";
+const BUCKET = "rtw-documents";
+const REST   = `${SUPABASE_URL}/rest/v1`;
+
+// ═══════════════════════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════════════════════
+const USERS = [
+  {username:"admin",   password:"VA2024!West", role:"admin",   name:"Admin"},
+  {username:"manager", password:"VAWest2024",  role:"manager", name:"Manager"},
+  {username:"office",  password:"VAoffice24",  role:"viewer",  name:"Office Team"},
+];
+const isAdmin = u => u && (u.role==="admin"||u.role==="manager");
+
+// ═══════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════
+const NO_EXPIRY = ["British Citizen","EU Settlement - ILR","ILR - Home Office","Irish Citizen - CTA"];
+const DEF_RTW   = ["British Citizen","EU Settlement - ILR","ILR - Home Office","VA Sponsorship","Leave to Remain","Irish Citizen - CTA","Other"];
+const DEF_DEPT  = ["Office","Field"];
+const DEF_EMPS  = ["Active","Left Employment","Not Working","On Leave","Not Started"];
+const TODAY     = new Date().toISOString().slice(0,10);
+
+// ═══════════════════════════════════════════════════════
+// EMAILJS CONFIG
+// ═══════════════════════════════════════════════════════
+const EJS_SERVICE  = "service_cu8931p";
+const EJS_TEMPLATE = "template_vd5qjnf";
+const EJS_PUBKEY   = "kI2nMevWwDgR66XSF";
+const MANAGER_EMAILS = [
+  "hcheema@visiting-angels.co.uk",
+  "pfitrzyk@visiting-angels.co.uk",
+  "mzieba@visiting-angels.co.uk",
+  "westlondon@visiting-angels.co.uk",
+];
+const TRACKER_URL = window.location.href;
+
+// Initialise EmailJS
+if(typeof emailjs !== "undefined") emailjs.init({publicKey: EJS_PUBKEY});
+
+// Send one email via EmailJS
+async function sendEmail(toEmail, params) {
+  if(typeof emailjs === "undefined") { console.warn("EmailJS not loaded"); return; }
+  try {
+    await emailjs.send(EJS_SERVICE, EJS_TEMPLATE, { to_email: toEmail, ...params });
+  } catch(e) { console.error("EmailJS error:", e); }
+}
+
+// Send reminder for one employee to appropriate recipients
+async function sendReminder(emp, daysLeft, triggerDays) {
+  const alertLabels = { 90:"90-Day Notice", 60:"60-Day Notice", 30:"30-Day Urgent", 15:"15-Day Final Alert" };
+  const messages = {
+    90: "Please ensure the visa extension application process has been started. The visa expires in 90 days.",
+    60: "A visa extension application should be in progress. The visa expires in 60 days. Please confirm the application status.",
+    30: "URGENT: The visa expires in 30 days. Immediate action is required to ensure continued right to work.",
+    15: "FINAL ALERT: The visa expires in 15 days. If an extension has not been applied for, work must cease on the expiry date.",
+  };
+  const params = {
+    employee_name: emp.name,
+    department:    emp.department,
+    rtw_type:      emp.rtwType + (emp.visaStatus ? ` — ${emp.visaStatus}` : ""),
+    visa_expiry:   new Date(emp.visaExpiry).toLocaleDateString("en-GB",{day:"2-digit",month:"long",year:"numeric"}),
+    days_remaining: String(daysLeft),
+    alert_level:   alertLabels[triggerDays] || `${triggerDays}-Day Alert`,
+    message:       messages[triggerDays] || "",
+    tracker_url:   TRACKER_URL,
+  };
+  // Managers always get all alerts
+  for(const email of MANAGER_EMAILS) {
+    await sendEmail(email, {...params, recipient_type: "manager"});
+  }
+  // Staff only get 30-day and 15-day alerts
+  if([30,15].includes(triggerDays) && emp.email) {
+    await sendEmail(emp.email, {...params, recipient_type: "staff"});
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// AUDIT LOG HELPERS
+// ═══════════════════════════════════════════════════════
+const HUMAN_LABELS = {
+  name:"Name", department:"Department", rtwType:"RTW Type", visaExpiry:"Visa Expiry",
+  visaStatus:"Visa Sub-type", employmentStatus:"Employment Status", email:"Email",
+  notes:"Notes", dateAdded:"Date Added", lastVisaCheck:"Last Visa Check",
+  nextCheckDate:"Next Check Date", docUrl:"Document URL", docName:"Document Name",
+  docStoragePath:"Document Path", spLink:"SharePoint Link",
+};
+const SKIP_AUDIT = ["lastUpdatedBy","lastUpdatedAt","docStoragePath","id"];
+
+function diffObjects(oldObj, newObj) {
+  const changes = [];
+  const keys = new Set([...Object.keys(oldObj||{}), ...Object.keys(newObj||{})]);
+  for(const k of keys) {
+    if(SKIP_AUDIT.includes(k)) continue;
+    const ov = oldObj?.[k] ?? null;
+    const nv = newObj?.[k] ?? null;
+    if(String(ov) !== String(nv)) {
+      changes.push({ field: k, label: HUMAN_LABELS[k]||k, from: ov, to: nv });
+    }
+  }
+  return changes;
+}
+
+const sbAudit = {
+  async log(employeeId, employeeName, action, changedBy, changes) {
+    try {
+      await fetch(`${REST}/rtw_audit_log`, {
+        method:"POST",
+        headers: h({"Prefer":"return=minimal"}),
+        body: JSON.stringify({
+          employee_id: employeeId||null,
+          employee_name: employeeName||"",
+          action,
+          changed_by: changedBy,
+          changes: changes||null,
+        }),
+      });
+    } catch(e) { console.warn("Audit log failed:", e); }
+  },
+  async fetch(limit=200) {
+    try {
+      const r = await fetch(`${REST}/rtw_audit_log?order=changed_at.desc&limit=${limit}`, {headers:h()});
+      if(!r.ok) return [];
+      return r.json();
+    } catch { return []; }
+  },
+};
+
+// Reminders sent tracking
+const sbReminders = {
+  async getSent() {
+    try {
+      const r = await fetch(`${REST}/rtw_reminders_sent`, {headers:h()});
+      if(!r.ok) return [];
+      return r.json();
+    } catch { return []; }
+  },
+  async markSent(employeeId, triggerDays) {
+    try {
+      await fetch(`${REST}/rtw_reminders_sent`, {
+        method:"POST",
+        headers: h({"Prefer":"resolution=merge-duplicates,return=minimal"}),
+        body: JSON.stringify({employee_id: employeeId, trigger_days: triggerDays}),
+      });
+    } catch {}
+  },
+  async clearForEmployee(employeeId) {
+    try {
+      await fetch(`${REST}/rtw_reminders_sent?employee_id=eq.${employeeId}`, {
+        method:"DELETE", headers: h({"Prefer":""}),
+      });
+    } catch {}
+  },
+};
+
+// ═══════════════════════════════════════════════════════
+// SUPABASE HELPERS
+// ═══════════════════════════════════════════════════════
+const h = (extra={}) => ({
+  "Content-Type":"application/json",
+  "apikey":        SUPABASE_ANON,
+  "Authorization": `Bearer ${SUPABASE_ANON}`,
+  "Prefer":"return=representation",
+  ...extra
+});
+
+const sb = {
+  async select() {
+    const r = await fetch(`${REST}/${TABLE}?order=id.asc&limit=500`,{headers:h()});
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+  async insertBulk(rows) {
+    const r = await fetch(`${REST}/${TABLE}`,{method:"POST",headers:h({"Prefer":"return=minimal"}),body:JSON.stringify(rows)});
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  },
+  async insert(row) {
+    const r = await fetch(`${REST}/${TABLE}`,{method:"POST",headers:h(),body:JSON.stringify(row)});
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    const d = await r.json(); return Array.isArray(d)?d[0]:d;
+  },
+  async update(id,patch) {
+    const r = await fetch(`${REST}/${TABLE}?id=eq.${id}`,{method:"PATCH",headers:h(),body:JSON.stringify(patch)});
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    const d = await r.json(); return Array.isArray(d)?d[0]:d;
+  },
+  async del(id) {
+    const r = await fetch(`${REST}/${TABLE}?id=eq.${id}`,{method:"DELETE",headers:h({"Prefer":""})});
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  },
+  async uploadFile(path,file) {
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`,{
+      method:"POST",
+      headers:{"apikey":SUPABASE_ANON,"Authorization":`Bearer ${SUPABASE_ANON}`,"Content-Type":file.type||"application/octet-stream","x-upsert":"true"},
+      body:file
+    });
+    if(!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path}`;
+  },
+  async deleteFile(path) {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`,{method:"DELETE",headers:h(),body:JSON.stringify({prefixes:[path]})});
+  }
+};
+
+const sbSettings = {
+  async get() {
+    try{
+      const r=await fetch(`${REST}/rtw_settings?id=eq.1`,{headers:h()});
+      if(!r.ok)return null;
+      const d=await r.json();return d[0]||null;
+    }catch{return null;}
+  },
+  async set(patch) {
+    try{
+      await fetch(`${REST}/rtw_settings`,{method:"POST",headers:h({"Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify({id:1,...patch})});
+    }catch{}
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════
+function addMonths(s,n){if(!s)return null;const d=new Date(s);d.setMonth(d.getMonth()+n);return d.toISOString().slice(0,10);}
+const daysLeft=d=>{if(!d)return null;const e=new Date(d),n=new Date();n.setHours(0,0,0,0);e.setHours(0,0,0,0);return Math.round((e-n)/86400000);};
+const aLvl=d=>d===null?"none":d<0?"expired":d<=15?"critical":d<=30?"urgent":d<=60?"warning":d<=90?"upcoming":"ok";
+const cLvl=d=>d===null?"none":d<0?"overdue":d<=14?"soon":d<=30?"upcoming":"ok";
+const fmt=d=>!d?"—":new Date(d).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});
+const needsChk=t=>!NO_EXPIRY.includes(t);
+const slug=s=>s.toLowerCase().replace(/[^a-z0-9]/g,"-").replace(/-+/g,"-");
+
+const AL={
+  expired: {dot:"#EF4444",bg:"#FEE2E2",bd:"#FCA5A5",tx:"#991B1B",row:"#FFF5F5"},
+  critical:{dot:"#F97316",bg:"#FFEDD5",bd:"#FDBA74",tx:"#9A3412",row:"#FFF9F5"},
+  urgent:  {dot:"#F59E0B",bg:"#FEF3C7",bd:"#FDE68A",tx:"#92400E",row:"#FFFDF0"},
+  warning: {dot:"#3B82F6",bg:"#DBEAFE",bd:"#93C5FD",tx:"#1E40AF",row:"#F5F9FF"},
+  upcoming:{dot:"#22C55E",bg:"#DCFCE7",bd:"#86EFAC",tx:"#166534",row:"#F7FFF9"},
+  ok:      {dot:"#22C55E",bg:"#F0FDF4",bd:"#BBF7D0",tx:"#166534",row:"#FFFFFF"},
+  none:    {dot:"#94A3B8",bg:"#F1F5F9",bd:"#E2E8F0",tx:"#475569",row:"#FFFFFF"},
+};
+const CL={
+  overdue: {dot:"#EF4444",bg:"#FEE2E2",bd:"#FCA5A5",tx:"#991B1B"},
+  soon:    {dot:"#F59E0B",bg:"#FEF3C7",bd:"#FDE68A",tx:"#92400E"},
+  upcoming:{dot:"#3B82F6",bg:"#DBEAFE",bd:"#93C5FD",tx:"#1E40AF"},
+  ok:      {dot:"#22C55E",bg:"#F0FDF4",bd:"#BBF7D0",tx:"#166534"},
+  none:    {dot:"#94A3B8",bg:"#F1F5F9",bd:"#E2E8F0",tx:"#64748B"},
+};
+const empClr=s=>s==="Active"?{bg:"#DCFCE7",tx:"#166534",bd:"#86EFAC"}:s==="Left Employment"?{bg:"#F1F5F9",tx:"#475569",bd:"#CBD5E1"}:s==="Not Working"?{bg:"#FEF9C3",tx:"#854D0E",bd:"#FDE047"}:{bg:"#F1F5F9",tx:"#64748B",bd:"#E2E8F0"};
+
+// ═══════════════════════════════════════════════════════
+// CHIPS
+// ═══════════════════════════════════════════════════════
+const VisaChip=({days,rtwType})=>{
+  if(NO_EXPIRY.includes(rtwType))return <span style={{color:"#94A3B8",fontSize:11}}>No expiry</span>;
+  const c=AL[aLvl(days)];
+  const lbl=days===null?"No date":days<0?`${Math.abs(days)}d overdue`:`${days}d left`;
+  return <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 9px",borderRadius:12,background:c.bg,border:`1px solid ${c.bd}`,color:c.tx,fontSize:11,fontWeight:600}}><span style={{width:6,height:6,borderRadius:"50%",background:c.dot,display:"inline-block",flexShrink:0}}/>{lbl}</span>;
+};
+const CheckChip=({days})=>{
+  if(days===null)return null;
+  const c=CL[cLvl(days)];
+  const lbl=days<0?`Check ${Math.abs(days)}d overdue`:days===0?"Due today":`Check in ${days}d`;
+  return <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 9px",borderRadius:12,background:c.bg,border:`1px solid ${c.bd}`,color:c.tx,fontSize:11,fontWeight:600}}><span style={{width:6,height:6,borderRadius:"50%",background:c.dot,display:"inline-block",flexShrink:0}}/>🗓 {lbl}</span>;
+};
+const Tag=({children,tx,bg,bd})=><span style={{display:"inline-block",padding:"2px 9px",borderRadius:10,background:bg,border:`1px solid ${bd}`,color:tx,fontSize:11,fontWeight:500}}>{children}</span>;
+
+// ═══════════════════════════════════════════════════════
+// SEED DATA — 133 staff (all dates corrected)
+// ═══════════════════════════════════════════════════════
+const SEED=[{id:1,name:"Shai-Louise Bigmore",department:"Office",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:2,name:"Candice Miller",department:"Office",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:3,name:"Sandra Zounaki",department:"Office",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:4,name:"Oona Stewart",department:"Office",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:5,name:"Shefali Hunjan",department:"Office",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:6,name:"Zoe Andrews",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:7,name:"Stephnie Hosie",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:8,name:"Mary Hay",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:9,name:"Allison Smith",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:10,name:"Maria Walles",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:11,name:"Kimberley Doherty",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:12,name:"Rhiannon Matthews",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:13,name:"Ciara Rafferty",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:14,name:"Sophie Sheridan",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:15,name:"Sharon Long",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:16,name:"Shannon O'Connor",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:17,name:"Kamorudeen Ajimobi",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:18,name:"Kizzy Stewart",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:19,name:"Najma Ibrahim",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:20,name:"Billie Kent",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:21,name:"Saamiy Bulham",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:22,name:"Safwa Shafie",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:23,name:"Georgina Emily McDonald",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:24,name:"Tracey Spinney",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:25,name:"Katie Jennings Fludder",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:26,name:"Salma Osman",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:27,name:"Lorraine Allette",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:28,name:"Sarah Childs",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:29,name:"Ramou Ceesay",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Not Working",email:"",notes:"not working"},{id:30,name:"Amina Zairi",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:31,name:"Hiba Yagoub",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:32,name:"Ryme Taitouche",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:33,name:"Sika Amorin",department:"Field",rtwType:"ILR - Home Office",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:34,name:"Vilma Curtado",department:"Field",rtwType:"ILR - Home Office",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:35,name:"Magdalena Zieba",department:"Office",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:36,name:"Patrycja Fitrzyk",department:"Office",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:37,name:"Fadumo Abdullahi (Fatima)",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:38,name:"Beata Mazurek",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:39,name:"Shamim Faraji",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:40,name:"Margaret Okpekpe",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:41,name:"Giorgia Minopoli",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:42,name:"Hamda Gaydh",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:43,name:"Konstantina Sifaki",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:44,name:"Neha Taneja",department:"Office",rtwType:"VA Sponsorship",visaExpiry:"2028-01-15",visaStatus:"",employmentStatus:"Active",email:"",notes:"PDF added to SharePoint"},{id:45,name:"Vijitha Vijayan",department:"Field",rtwType:"VA Sponsorship",visaExpiry:"2026-05-15",visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:46,name:"Hafsa Tabassum",department:"Field",rtwType:"VA Sponsorship",visaExpiry:"2028-03-09",visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:47,name:"Hannah Boahene",department:"Field",rtwType:"VA Sponsorship",visaExpiry:"2028-02-14",visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:48,name:"Thoufiq Thoufiq",department:"Field",rtwType:"VA Sponsorship",visaExpiry:"2028-08-03",visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:49,name:"Ashritha Lobo",department:"Field",rtwType:"VA Sponsorship",visaExpiry:"2028-03-08",visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:50,name:"Rasha Abdelrahim",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-11-20",visaStatus:"Other - Not Specified",employmentStatus:"Left Employment",email:"",notes:""},{id:51,name:"Caroline Soliman",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-10-24",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:52,name:"Salieu Bah",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-06-29",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:""},{id:53,name:"Sunil Neupane",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-02-07",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Left Employment",email:"",notes:""},{id:54,name:"Pawanpreet Kaur",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-01-24",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:55,name:"Anita Rani",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-01-21",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:56,name:"Himanpreet Kaur",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-01-16",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:57,name:"Nyasha Chipudya",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-01-08",visaStatus:"Dependent Visa",employmentStatus:"Left Employment",email:"",notes:""},{id:58,name:"Cicymol (Cici) Jose",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-06-10",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:59,name:"Ishani Rodrigo Basthiyan",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-06-02",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:60,name:"Alphy Mathew",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-05-23",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:61,name:"Ashmita Subedi",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-05-16",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Left Employment",email:"",notes:""},{id:62,name:"Sneha Dissanayaka",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-04-30",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Left Employment",email:"",notes:""},{id:63,name:"Ruth Muchwampaka",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-12-29",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:64,name:"Rutuja Tupe",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-09-23",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:65,name:"Charanjit Kaur",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-12-01",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:""},{id:66,name:"Hani Ahmed",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:67,name:"Monika Surmacz",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:68,name:"Subina Shrestha",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-11-24",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:69,name:"Aiswarya Arjunan",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-07-11",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:70,name:"Alice Kigongo",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-12-30",visaStatus:"Other - Not Specified",employmentStatus:"Not Working",email:"",notes:"not working, have not started"},{id:71,name:"Pasang Ghalan",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-05-21",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:72,name:"Chloe Mair",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:73,name:"Elifnur Sumer",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:74,name:"Leila Magan",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:75,name:"Errol Smith",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:76,name:"Lavinia Giurgiu",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:77,name:"Anahita Shakib",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-05-23",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:78,name:"Kiyadokht Moniri",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2030-02-28",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Left Employment",email:"",notes:""},{id:79,name:"Forough Raeisi",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-05-23",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:80,name:"Ravisha Salvi",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-11-07",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:81,name:"Nita Raphael",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-05-09",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:"PDF added to SharePoint"},{id:82,name:"Ada Lena Akamaguna",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-02-08",visaStatus:"Other - Not Specified",employmentStatus:"Left Employment",email:"",notes:""},{id:83,name:"Suelen Dos Prazeres",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:84,name:"Renee Chinakwe - Venn",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:85,name:"Divine Makangou",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:86,name:"Sarifa Osman",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:87,name:"Madail Pontes",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:88,name:"Elina Thapa",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-10-11",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Left Employment",email:"",notes:""},{id:89,name:"Ashel Munemo",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-10-19",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Left Employment",email:"",notes:""},{id:90,name:"Sylwia Nawasielska",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:91,name:"Zara Rogers",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:92,name:"Ayanda Chakabva",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:93,name:"Tavleen Kaur",department:"Office",rtwType:"Leave to Remain",visaExpiry:"2026-07-06",visaStatus:"Graduate Visa - No restriction",employmentStatus:"Active",email:"",notes:""},{id:94,name:"Lorna Wealleans",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:95,name:"Ingrid Lewis",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:96,name:"Suad Habib",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:97,name:"Yanaelle Chateauneu",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:98,name:"Radia Abdi",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:99,name:"Grace Robin",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-08-04",visaStatus:"",employmentStatus:"Active",email:"",notes:"ECS positive verification notice - check again 27/07/2026"},{id:100,name:"Ziwa Gwatidzo",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:101,name:"Amy Beardsley",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Left Employment",email:"",notes:""},{id:102,name:"Saron Araya",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:103,name:"Mary Reaidi",department:"Field",rtwType:"Irish Citizen - CTA",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:"Irish Citizen CTA Common Travel Area"},{id:104,name:"Christine Barrinuevo",department:"Field",rtwType:"Leave to Remain",visaExpiry:null,visaStatus:"Dependent Visa",employmentStatus:"Active",email:"",notes:"to be checked again before 05/08/2026"},{id:105,name:"Dodji Akuete",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-02-21",visaStatus:"Dependent Visa",employmentStatus:"Active",email:"",notes:""},{id:106,name:"Hannah Adamou",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-11-24",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:""},{id:107,name:"Maryam Ali-Sharma",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-09-03",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:""},{id:108,name:"Priyanka",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-01-25",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:109,name:"Lina Abunanza",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-07-01",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""},{id:110,name:"Syurimaya Shukor",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2028-01-18",visaStatus:"Dependent Visa",employmentStatus:"Active",email:"",notes:""},{id:111,name:"Hala Bashir",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:112,name:"Naimo Sheikh",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Not Working",email:"",notes:"not started"},{id:113,name:"Ann Mukamunana",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:114,name:"Kerrie Ghanem",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:115,name:"Ayisha Brimah",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:116,name:"Rebekah O'Reilly",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:117,name:"Ann Knight",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:118,name:"Bridget Ressa",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:119,name:"Danielle Njamen",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:120,name:"Aisha Cisse",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:121,name:"Argentina D'Souza",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:122,name:"Sandra Coyle",department:"Field",rtwType:"Irish Citizen - CTA",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:"Irish Citizen CTA Common Travel Area"},{id:123,name:"Najma Ibrahim",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:124,name:"Mary Hay",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:125,name:"Marta Atigatchi",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:126,name:"Emilia Adhim",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:127,name:"Wassem Khan",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:128,name:"Julie Andapon",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:129,name:"Honey Holford",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:130,name:"Safiya Abdalla",department:"Field",rtwType:"British Citizen",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:131,name:"Carolina Araujo",department:"Field",rtwType:"EU Settlement - ILR",visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:""},{id:132,name:"Deborah Ekpe",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2026-11-27",visaStatus:"Other - Not Specified",employmentStatus:"Active",email:"",notes:""},{id:133,name:"Dichhika Baral",department:"Field",rtwType:"Leave to Remain",visaExpiry:"2027-05-25",visaStatus:"Student - 20 hour per week restricted",employmentStatus:"Active",email:"",notes:""}];
+
+// ═══════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════
+function Login({onLogin}){
+  const [u,setU]=useState("");const [p,setP]=useState("");const [err,setErr]=useState("");const [loading,setLoading]=useState(false);
+  const go=()=>{setLoading(true);setErr("");setTimeout(()=>{const usr=USERS.find(x=>x.username===u&&x.password===p);if(usr)onLogin(usr);else setErr("Incorrect username or password");setLoading(false);},400);};
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#EFF6FF,#F8FAFC,#F0FDF4)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{width:"100%",maxWidth:400,background:"#fff",borderRadius:20,boxShadow:"0 20px 60px rgba(30,64,175,0.12)",overflow:"hidden"}}>
+        <div style={{background:"linear-gradient(135deg,#1E40AF,#3B82F6)",padding:"36px 32px 28px",textAlign:"center"}}>
+          <div style={{fontSize:40,marginBottom:12}}>🛡️</div>
+          <div style={{color:"rgba(255,255,255,0.8)",fontSize:11,letterSpacing:3,textTransform:"uppercase",marginBottom:6}}>Visiting Angels West London</div>
+          <div style={{color:"#fff",fontSize:22,fontWeight:800}}>Right to Work Tracker</div>
+        </div>
+        <div style={{padding:"28px 32px"}}>
+          {[["Username","text",u,setU],["Password","password",p,setP]].map(([lbl,t,v,s])=>(
+            <div key={lbl} style={{marginBottom:16}}>
+              <label style={{display:"block",color:"#475569",fontSize:12,fontWeight:600,marginBottom:6}}>{lbl}</label>
+              <input type={t} value={v} onChange={e=>s(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}
+                style={{width:"100%",padding:"11px 14px",border:`1px solid ${err?"#FCA5A5":"#E2E8F0"}`,borderRadius:10,fontSize:14,boxSizing:"border-box",outline:"none"}}/>
+            </div>
+          ))}
+          {err&&<div style={{color:"#DC2626",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"10px 14px",fontSize:13,marginBottom:16}}>{err}</div>}
+          <button onClick={go} disabled={loading} style={{width:"100%",padding:"13px",background:"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer"}}>
+            {loading?"Signing in…":"Sign In →"}
+          </button>
+          <p style={{color:"#CBD5E1",fontSize:11,textAlign:"center",marginTop:20}}>Home Office compliant · Cloud RTW monitoring</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// MANAGE LISTS MODAL
+// ═══════════════════════════════════════════════════════
+function ManageLists({rtwTypes,departments,empStatuses,onSave,onClose}){
+  const [rtw,setRtw]=useState([...rtwTypes]);
+  const [depts,setDepts]=useState([...departments]);
+  const [sts,setSts]=useState([...empStatuses]);
+  const [inp,setInp]=useState({rtw:"",dept:"",status:""});
+  const [tab,setTab]=useState("rtw");
+  const secs={rtw:{label:"RTW Types",list:rtw,setList:setRtw,key:"rtw"},depts:{label:"Departments",list:depts,setList:setDepts,key:"dept"},status:{label:"Emp. Statuses",list:sts,setList:setSts,key:"status"}};
+  const {list,setList,key}=secs[tab];
+  const add=()=>{const v=inp[key].trim();if(v&&!list.includes(v)){setList([...list,v]);setInp(p=>({...p,[key]:""}));}};
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:"100%",maxWidth:480,background:"#fff",borderRadius:16,boxShadow:"0 25px 60px rgba(0,0,0,0.2)",overflow:"hidden"}}>
+        <div style={{padding:"18px 24px",borderBottom:"1px solid #F1F5F9",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:16,fontWeight:700,color:"#0F172A"}}>Manage Dropdown Lists</div>
+          <button onClick={onClose} style={{background:"#F1F5F9",border:"none",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:16,color:"#64748B"}}>×</button>
+        </div>
+        <div style={{display:"flex",borderBottom:"1px solid #F1F5F9"}}>
+          {Object.entries(secs).map(([id,s])=>(
+            <button key={id} onClick={()=>setTab(id)} style={{flex:1,padding:"11px 4px",background:"none",border:"none",borderBottom:`2px solid ${tab===id?"#1E40AF":"transparent"}`,color:tab===id?"#1E40AF":"#64748B",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase"}}>{s.label}</button>
+          ))}
+        </div>
+        <div style={{padding:"20px 24px",minHeight:160}}>
+          <div style={{display:"flex",gap:8,marginBottom:12}}>
+            <input value={inp[key]} onChange={e=>setInp(p=>({...p,[key]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="Add new…" style={{flex:1,padding:"9px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,outline:"none"}}/>
+            <button onClick={add} style={{padding:"9px 16px",background:"#1E40AF",color:"#fff",border:"none",borderRadius:8,fontSize:13,cursor:"pointer",fontWeight:600}}>Add</button>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {list.map(item=>(
+              <span key={item} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 10px",background:"#F1F5F9",border:"1px solid #E2E8F0",borderRadius:20,fontSize:12,color:"#334155"}}>
+                {item}<button onClick={()=>setList(list.filter(x=>x!==item))} style={{background:"none",border:"none",cursor:"pointer",color:"#94A3B8",fontSize:14,padding:0,lineHeight:1}}>×</button>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div style={{padding:"14px 24px",borderTop:"1px solid #F1F5F9",display:"flex",gap:10,justifyContent:"flex-end"}}>
+          <button onClick={onClose} style={{padding:"10px 20px",background:"#F1F5F9",border:"none",borderRadius:8,fontSize:13,cursor:"pointer",color:"#475569"}}>Cancel</button>
+          <button onClick={()=>{onSave(rtw,depts,sts);onClose();}} style={{padding:"10px 20px",background:"#1E40AF",color:"#fff",border:"none",borderRadius:8,fontSize:13,cursor:"pointer",fontWeight:600}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// EMPLOYEE MODAL
+// ═══════════════════════════════════════════════════════
+function EmpModal({emp,onClose,onSave,onArchive,rtwTypes,departments,empStatuses,user}){
+  const isNew=emp.id===0;
+  const [form,setForm]=useState({...emp});
+  const [saving,setSaving]=useState(false);
+  const [saved,setSaved]=useState(false);
+  const [uploading,setUploading]=useState(false);
+  const [uploadErr,setUploadErr]=useState("");
+  const hasExpiry=!NO_EXPIRY.includes(form.rtwType);
+  const needsChkF=needsChk(form.rtwType);
+  const days=daysLeft(form.visaExpiry);
+  const chkDays=daysLeft(form.nextCheckDate);
+  const c=AL[hasExpiry?aLvl(days):"none"];
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const handleLastChk=v=>{set("lastVisaCheck",v);if(v)set("nextCheckDate",addMonths(v,6));};
+  const handleUpload=async e=>{
+    const file=e.target.files[0];if(!file)return;
+    if(file.size>10*1024*1024){setUploadErr("File too large — max 10MB");return;}
+    setUploading(true);setUploadErr("");
+    try{
+      const ext=file.name.split(".").pop();
+      const path=`${form.id||"new"}/${Date.now()}-${slug(file.name)}.${ext}`;
+      if(form.docStoragePath){try{await sb.deleteFile(form.docStoragePath);}catch{}}
+      const url=await sb.uploadFile(path,file);
+      set("docUrl",url);set("docName",file.name);set("docStoragePath",path);
+    }catch(err){setUploadErr("Upload failed: "+err.message);}
+    setUploading(false);
+  };
+  const handleDelDoc=async()=>{
+    if(!confirm("Remove this document?"))return;
+    try{if(form.docStoragePath)await sb.deleteFile(form.docStoragePath);set("docUrl","");set("docName","");set("docStoragePath","");}catch(err){setUploadErr("Delete failed: "+err.message);}
+  };
+  const save=async()=>{
+    setSaving(true);
+    const out={...form,lastUpdatedBy:user?.name||"Unknown",lastUpdatedAt:new Date().toISOString()};
+    if(!hasExpiry)out.visaExpiry=null;
+    if(!needsChkF){out.lastVisaCheck=null;out.nextCheckDate=null;}
+    await onSave(out);setSaved(true);setSaving(false);
+    setTimeout(()=>{setSaved(false);onClose();},700);
+  };
+// ── Stable form field components (defined OUTSIDE EmpModal to prevent remount on keystroke) ──
+const Inp=({label,field,type,hint,onChange,form,set})=>(
+  <div style={{marginBottom:16}}>
+    <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
+    {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
+    <input type={type||"text"} value={form[field]||""} onChange={onChange||(e=>set(field,e.target.value))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+  </div>
+);
+const Sel=({label,field,opts,hint,form,set})=>(
+  <div style={{marginBottom:16}}>
+    <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>{label}</label>
+    {hint&&<div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>{hint}</div>}
+    <select value={form[field]||""} onChange={e=>set(field,e.target.value)} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+      <option value="">— Select —</option>
+      {opts.map(o=><option key={o}>{o}</option>)}
+    </select>
+  </div>
+);
+const Sec=({title,children})=>(
+  <div style={{marginBottom:20}}>
+    <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>{title}</div>
+    {children}
+  </div>
+);
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.55)",zIndex:150,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:"100%",maxWidth:620,background:"#fff",borderRadius:16,boxShadow:"0 25px 60px rgba(0,0,0,0.2)",maxHeight:"93vh",overflowY:"auto",display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"20px 24px 14px",borderBottom:"1px solid #F1F5F9",position:"sticky",top:0,background:"#fff",zIndex:1,borderRadius:"16px 16px 0 0",flexShrink:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{color:"#94A3B8",fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>{isNew?"New Staff Member":"Edit Record"}{emp.id?` · #${emp.id}`:""}</div>
+              <div style={{fontSize:19,fontWeight:800,color:"#0F172A"}}>{form.name||"—"}</div>
+              {emp.lastUpdatedBy&&<div style={{color:"#94A3B8",fontSize:11,marginTop:3}}>Last updated by {emp.lastUpdatedBy} · {emp.lastUpdatedAt?new Date(emp.lastUpdatedAt).toLocaleDateString("en-GB"):""}</div>}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
+              {hasExpiry&&<VisaChip days={days} rtwType={form.rtwType}/>}
+              {needsChkF&&chkDays!==null&&<CheckChip days={chkDays}/>}
+              <button onClick={onClose} style={{background:"#F1F5F9",border:"none",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:16,color:"#64748B"}}>×</button>
+            </div>
+          </div>
+        </div>
+        <div style={{padding:"20px 24px",flex:1}}>
+
+          {/* Personal & Employment */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Personal & Employment</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
+              <div style={{gridColumn:"1/-1",marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Full Name</label>
+                <input value={form.name||""} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Department</label>
+                <select value={form.department||""} onChange={e=>setForm(f=>({...f,department:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                  {departments.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Employment Status</label>
+                <select value={form.employmentStatus||""} onChange={e=>setForm(f=>({...f,employmentStatus:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                  {empStatuses.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div style={{gridColumn:"1/-1",marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Staff Email</label>
+                <input type="email" value={form.email||""} onChange={e=>setForm(f=>({...f,email:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Date Added</label>
+                <input type="date" value={form.dateAdded||""} onChange={e=>setForm(f=>({...f,dateAdded:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Right to Work */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Right to Work</div>
+            <div style={{marginBottom:16}}>
+              <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>RTW Type</label>
+              <select value={form.rtwType||""} onChange={e=>setForm(f=>({...f,rtwType:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,background:"#fff",color:"#0F172A",boxSizing:"border-box"}}>
+                {rtwTypes.map(o=><option key={o}>{o}</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:16}}>
+              <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Visa / RTW Sub-type</label>
+              <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>e.g. Graduate Visa, Dependent Visa, Student 20hr restricted</div>
+              <input value={form.visaStatus||""} onChange={e=>setForm(f=>({...f,visaStatus:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+            </div>
+            {hasExpiry&&(
+              <div style={{marginBottom:16}}>
+                <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Visa Expiry Date</label>
+                <input type="date" value={form.visaExpiry||""} onChange={e=>setForm(f=>({...f,visaExpiry:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+              </div>
+            )}
+            {hasExpiry&&days!==null&&(
+              <div style={{padding:"11px 14px",background:c.bg,border:`1px solid ${c.bd}`,borderRadius:10,marginBottom:16,fontSize:13,color:c.tx,fontWeight:500}}>
+                {days<0?`⚠️ EXPIRED ${Math.abs(days)} days ago`:days<=90?`📅 ${days} days until expiry — within reminder window`:`✅ ${days} days until expiry`}
+              </div>
+            )}
+          </div>
+
+          {/* Visa Check Schedule */}
+          {needsChkF&&(
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Visa Check Schedule</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
+                <div style={{marginBottom:16}}>
+                  <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Last Visa Check Date</label>
+                  <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>Date manager last verified</div>
+                  <input type="date" value={form.lastVisaCheck||""} onChange={e=>handleLastChk(e.target.value)} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+                </div>
+                <div style={{marginBottom:16}}>
+                  <label style={{display:"block",color:"#64748B",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",marginBottom:5}}>Next Check Date</label>
+                  <div style={{color:"#94A3B8",fontSize:11,marginBottom:5}}>Auto: last check + 6 months</div>
+                  <input type="date" value={form.nextCheckDate||""} onChange={e=>setForm(f=>({...f,nextCheckDate:e.target.value}))} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box"}}/>
+                  {chkDays!==null&&<div style={{marginTop:6}}><CheckChip days={chkDays}/></div>}
+                </div>
+              </div>
+              <div style={{padding:"10px 14px",background:"#F0F9FF",border:"1px solid #BAE6FD",borderRadius:8,fontSize:12,color:"#0369A1",marginBottom:4}}>
+                💡 Next Check Date auto-populates as 6 months from Last Visa Check. Override manually if needed.
+              </div>
+            </div>
+          )}
+
+          {/* Documents */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>RTW Documents — Passport / Visa / BRP</div>
+            {form.docUrl&&(
+              <div style={{padding:"14px 16px",background:"#F0FDF4",border:"1px solid #86EFAC",borderRadius:12,marginBottom:16}}>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{width:44,height:44,background:"#DCFCE7",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>📄</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{form.docName||"Document on file"}</div>
+                    <div style={{fontSize:11,color:"#64748B",marginTop:2}}>Stored in Supabase Cloud · Accessible from any device</div>
+                  </div>
+                  <div style={{display:"flex",gap:8,flexShrink:0}}>
+                    <a href={form.docUrl} target="_blank" rel="noreferrer" style={{padding:"6px 14px",background:"#1E40AF",color:"#fff",borderRadius:8,fontSize:12,fontWeight:600,textDecoration:"none"}}>View →</a>
+                    <button onClick={handleDelDoc} style={{padding:"6px 12px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,color:"#DC2626",fontSize:12,cursor:"pointer",fontWeight:600}}>✕</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{border:"2px dashed #CBD5E1",borderRadius:12,padding:"24px",textAlign:"center",background:"#FAFBFC",marginBottom:10}}>
+              {uploading?(
+                <div><div style={{fontSize:28,marginBottom:8}}>⏳</div><div style={{fontSize:13,color:"#475569",fontWeight:600}}>Uploading to Supabase…</div></div>
+              ):(
+                <div>
+                  <div style={{fontSize:32,marginBottom:8}}>☁️</div>
+                  <div style={{fontSize:14,fontWeight:600,color:"#0F172A",marginBottom:4}}>{form.docUrl?"Replace document":"Upload RTW document"}</div>
+                  <div style={{fontSize:12,color:"#64748B",marginBottom:14}}>Passport scan, BRP, visa vignette, CoS · PDF or image · Max 10MB<br/><strong style={{color:"#1E40AF"}}>Stored in cloud — visible to your whole team instantly</strong></div>
+                  <label style={{display:"inline-block",padding:"9px 22px",background:"#1E40AF",color:"#fff",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+                    {form.docUrl?"Replace File":"Choose File"}
+                    <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" onChange={handleUpload} style={{display:"none"}}/>
+                  </label>
+                </div>
+              )}
+            </div>
+            {uploadErr&&<div style={{padding:"10px 14px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,fontSize:12,color:"#DC2626",marginBottom:10}}>{uploadErr}</div>}
+            <div style={{padding:"12px 14px",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,marginBottom:4}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#475569",textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Additional SharePoint / Drive Link (optional)</div>
+              <input type="url" value={form.spLink||""} onChange={e=>setForm(f=>({...f,spLink:e.target.value}))} placeholder="https://…" style={{width:"100%",padding:"8px 10px",border:"1px solid #E2E8F0",borderRadius:6,fontSize:12,boxSizing:"border-box",color:"#334155"}}/>
+              {form.spLink&&<a href={form.spLink} target="_blank" rel="noreferrer" style={{display:"inline-block",marginTop:8,fontSize:12,color:"#1E40AF",fontWeight:600}}>🔗 Open link →</a>}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:1,textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #F1F5F9"}}>Notes</div>
+            <textarea value={form.notes||""} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} rows={3} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#0F172A",boxSizing:"border-box",resize:"vertical"}}/>
+          </div>
+
+          <div style={{display:"flex",gap:10,paddingTop:4}}>
+            <button onClick={save} disabled={saving} style={{flex:1,padding:"13px",background:saved?"#22C55E":saving?"#64748B":"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",transition:"background 0.3s"}}>
+              {saved?"✓ Saved!":saving?"Saving…":isNew?"Add Staff Member":"Save Changes"}
+            </button>
+            {!isNew&&<button onClick={()=>{if(confirm(`Archive ${emp.name}?`)){onArchive(emp.id);onClose();}}} style={{padding:"13px 18px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:10,color:"#DC2626",fontSize:13,cursor:"pointer",fontWeight:600}}>Archive</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════
+function App(){
+  const [user,setUser]=useState(null);
+  const [employees,setEmployees]=useState([]);
+  const [rtwTypes,setRtwTypes]=useState(DEF_RTW);
+  const [departments,setDepts]=useState(DEF_DEPT);
+  const [empStatuses,setEmpSts]=useState(DEF_EMPS);
+  const [loading,setLoading]=useState(false);
+  const [dbErr,setDbErr]=useState("");
+  const [seeding,setSeeding]=useState(false);
+  const [tab,setTab]=useState("dashboard");
+  const [search,setSearch]=useState("");
+  const [fDept,setFDept]=useState("All");
+  const [fRtw,setFRtw]=useState("All");
+  const [fStatus,setFStatus]=useState("Active");
+  const [fAlert,setFAlert]=useState("All");
+  const [fCheck,setFCheck]=useState("All");
+  const [sortCol,setSortCol]=useState("days");
+  const [sortDir,setSortDir]=useState("asc");
+  const [selected,setSelected]=useState(null);
+  const [showNew,setShowNew]=useState(false);
+  const [showLists,setShowLists]=useState(false);
+  const [auditLog,setAuditLog]=useState([]);
+  const [auditLoading,setAuditLoading]=useState(false);
+  const [monthlyResults,setMonthlyResults]=useState([]);
+  const [monthlyError,setMonthlyError]=useState("");
+
+  const loadData=useCallback(async()=>{
+    setLoading(true);setDbErr("");
+    try{
+      const [emps,settings]=await Promise.all([sb.select(),sbSettings.get()]);
+      setEmployees(emps||[]);
+      if(settings){
+        if(settings.rtwTypes?.length)setRtwTypes(settings.rtwTypes);
+        if(settings.departments?.length)setDepts(settings.departments);
+        if(settings.empStatuses?.length)setEmpSts(settings.empStatuses);
+      }
+    }catch(e){setDbErr(e.message);}
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{if(user)loadData();},[user,loadData]);
+
+  useEffect(()=>{
+    if(tab==="audit"&&user){
+      setAuditLoading(true);
+      sbAudit.fetch(300).then(logs=>{setAuditLog(logs);setAuditLoading(false);});
+    }
+  },[tab,user]);
+
+  // ── Reminder engine — runs once on load ──────────────────
+  useEffect(()=>{
+    if(!user||employees.length===0) return;
+    const runReminders=async()=>{
+      const sent=await sbReminders.getSent();
+      const sentSet=new Set(sent.map(s=>`${s.employee_id}_${s.trigger_days}`));
+      const triggers=[90,60,30,15];
+      for(const emp of employees){
+        if(emp.employmentStatus!=="Active"||!emp.visaExpiry) continue;
+        const d=daysLeft(emp.visaExpiry);
+        if(d===null||d<0) continue;
+        for(const t of triggers){
+          if(d<=t){
+            const key=`${emp.id}_${t}`;
+            if(!sentSet.has(key)){
+              await sendReminder(emp,d,t);
+              await sbReminders.markSent(emp.id,t);
+              sentSet.add(key);
+            }
+          }
+        }
+      }
+    };
+    runReminders();
+  },[employees.length>0]);
+
+  const seedDatabase=async()=>{
+    setSeeding(true);setDbErr("");
+    try{
+      const rows=SEED.map(emp=>({
+        name:emp.name,department:emp.department,rtwType:emp.rtwType,
+        visaExpiry:emp.visaExpiry||null,visaStatus:emp.visaStatus||"",
+        employmentStatus:emp.employmentStatus,email:emp.email||"",notes:emp.notes||"",
+        dateAdded:TODAY,lastVisaCheck:emp.visaExpiry?TODAY:null,
+        nextCheckDate:emp.visaExpiry?addMonths(TODAY,6):null,
+        docUrl:"",docName:"",docStoragePath:"",spLink:"",
+        lastUpdatedBy:"System",lastUpdatedAt:new Date().toISOString(),
+      }));
+      await sb.insertBulk(rows);
+      await sbAudit.log(null,"All Staff","bulk_import","System",[{field:"action",label:"Action",from:null,to:"Imported 133 staff from spreadsheet"}]);
+      await loadData();
+    }catch(e){setDbErr("Seed failed: "+e.message);}
+    setSeeding(false);
+  };
+
+  const saveEmployee=async(emp)=>{
+    try{
+      const{id,...row}=emp;
+      delete row.docData; delete row.docFileName;
+      if(id===0){
+        const created=await sb.insert(row);
+        setEmployees(p=>[...p,created]);
+        await sbAudit.log(created?.id,row.name,"created",emp.lastUpdatedBy||"Unknown",[{field:"action",label:"Action",from:null,to:"New staff member added"}]);
+      } else {
+        // Get old record for diff
+        const oldEmp=employees.find(e=>e.id===id)||{};
+        const changes=diffObjects(oldEmp,row);
+        const updated=await sb.update(id,row);
+        setEmployees(p=>p.map(e=>e.id===id?(updated||{...e,...row}):e));
+        if(changes.length>0){
+          await sbAudit.log(id,row.name,"updated",emp.lastUpdatedBy||"Unknown",changes);
+          // If visa expiry changed, clear sent reminders so they re-trigger
+          if(changes.some(c=>c.field==="visaExpiry")){
+            await sbReminders.clearForEmployee(id);
+          }
+        }
+      }
+    }catch(e){alert("Save failed: "+e.message);}
+  };
+
+  const archiveEmployee=async(id)=>{
+    try{
+      const emp=employees.find(e=>e.id===id);
+      await sb.del(id);
+      setEmployees(p=>p.filter(e=>e.id!==id));
+      await sbAudit.log(id,emp?.name||"Unknown","archived",user?.name||"Unknown",[{field:"action",label:"Action",from:"Active","to":"Archived"}]);
+    }catch(e){alert("Archive failed: "+e.message);}
+  };
+
+  const saveLists=async(r,d,s)=>{
+    setRtwTypes(r);setDepts(d);setEmpSts(s);
+    await sbSettings.set({rtwTypes:r,departments:d,empStatuses:s});
+  };
+
+  // ── Fuzzy name matching ──────────────────────────────────
+  const fuzzyScore=(a,b)=>{
+    a=a.toLowerCase().replace(/[^a-z\s]/g,"").replace(/\s+/g," ").trim();
+    b=b.toLowerCase().replace(/[^a-z\s]/g,"").replace(/\s+/g," ").trim();
+    if(a===b) return 100;
+    // Check if all words of shorter name appear in longer name
+    const wa=a.split(" "); const wb=b.split(" ");
+    const shorter=wa.length<=wb.length?wa:wb;
+    const longer=wa.length<=wb.length?wb:wa;
+    const matchedWords=shorter.filter(w=>longer.some(lw=>lw.startsWith(w)||w.startsWith(lw)||lw===w));
+    const wordScore=(matchedWords.length/shorter.length)*100;
+    // Simple char overlap score
+    const setA=new Set(a.split("")); const setB=new Set(b.split(""));
+    const intersection=[...setA].filter(c=>setB.has(c)).length;
+    const charScore=(intersection/Math.max(setA.size,setB.size))*100;
+    return Math.round((wordScore*0.7)+(charScore*0.3));
+  };
+
+  const matchName=(inputName,dbEmployees)=>{
+    let best=null; let bestScore=0;
+    for(const emp of dbEmployees){
+      const score=fuzzyScore(inputName,emp.name);
+      if(score>bestScore){bestScore=score;best=emp;}
+    }
+    return bestScore>=60?{match:best,confidence:bestScore}:{match:null,confidence:0};
+  };
+
+  // ── Monthly file upload handler ──────────────────────────
+  const handleMonthlyUpload=async(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    setMonthlyError(""); setMonthlyResults([]);
+    try{
+      // Read file as text for CSV, or use SheetJS-like parsing for xlsx
+      const reader=new FileReader();
+      reader.onload=async(ev)=>{
+        try{
+          let names=[];
+          const fname=file.name.toLowerCase();
+          if(fname.endsWith(".csv")){
+            // Parse CSV
+            const text=ev.target.result;
+            const lines=text.split("\n").filter(l=>l.trim());
+            // Find name column (first column with text that looks like names)
+            const header=lines[0].split(",");
+            const nameColIdx=header.findIndex(h=>/name/i.test(h));
+            const colIdx=nameColIdx>=0?nameColIdx:0;
+            names=lines.slice(1).map((l,i)=>{
+              const cols=l.split(",");
+              return {rowNum:i+2,name:(cols[colIdx]||"").replace(/"/g,"").trim()};
+            }).filter(n=>n.name&&!/^\d+$/.test(n.name));
+          } else {
+            // Parse xlsx using SheetJS
+            const arr=ev.target.result;
+            const wb=XLSX.read(arr,{type:"array"});
+            const ws=wb.Sheets[wb.SheetNames[0]];
+            const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+            if(data.length<2){setMonthlyError("File appears empty.");return;}
+            // Find name column
+            const header=data[0].map(h=>String(h).toLowerCase());
+            const nameColIdx=header.findIndex(h=>h.includes("name"));
+            const colIdx=nameColIdx>=0?nameColIdx:1; // default to col B if no header
+            names=data.slice(1).map((row,i)=>{
+              const val=String(row[colIdx]||"").trim();
+              return{rowNum:i+2,name:val};
+            }).filter(n=>n.name&&n.name.length>2&&!/^\d+$/.test(n.name));
+          }
+          if(names.length===0){setMonthlyError("Could not extract names from file. Please save as CSV and try again.");return;}
+          // Match against database
+          const results=names.map(({rowNum,name})=>{
+            const {match,confidence}=matchName(name,employees);
+            const d=match?daysLeft(match.visaExpiry):null;
+            const visaExpired=d!==null&&d<0;
+            const status=!match?"not_found":match.employmentStatus;
+            return{rowNum,inputName:name,match,confidence,daysLeft:d,visaExpired,status};
+          });
+          setMonthlyResults(results);
+        }catch(err){setMonthlyError("Failed to parse file: "+err.message);}
+      };
+      if(file.name.toLowerCase().endsWith(".csv")) reader.readAsText(file);
+      else reader.readAsArrayBuffer(file);
+    }catch(err){setMonthlyError("Upload failed: "+err.message);}
+    e.target.value="";
+  };
+
+  // ── Export monthly report as CSV ─────────────────────────
+  const exportMonthlyCSV=()=>{
+    const rows=[["#","Name in File","Matched To","RTW Type","Visa Sub-type","Visa Expiry","Days Left","Status","Document on File","Match Confidence"]];
+    monthlyResults.forEach(r=>{
+      rows.push([
+        r.rowNum, r.inputName,
+        r.match?r.match.name:"NOT FOUND",
+        r.match?r.match.rtwType:"",
+        r.match?r.match.visaStatus:"",
+        r.match?fmt(r.match.visaExpiry):"",
+        r.daysLeft!==null?r.daysLeft:"",
+        r.status==="not_found"?"Not Found":r.visaExpired?"EXPIRED":r.daysLeft!==null&&r.daysLeft<=90?`Expiring in ${r.daysLeft} days`:"Valid",
+        r.match&&needsChk(r.match.rtwType)?(r.match.docUrl?"Yes":"No"):"N/A",
+        r.confidence?r.confidence+"%":"—",
+      ]);
+    });
+    const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`RTW_Check_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const active=employees.filter(e=>e.employmentStatus==="Active");
+  const stats=useMemo(()=>{
+    const w=active.filter(e=>e.visaExpiry);
+    return{
+      total:active.length,
+      noExpiry:active.filter(e=>!e.visaExpiry||NO_EXPIRY.includes(e.rtwType)).length,
+      upcoming:w.filter(e=>{const d=daysLeft(e.visaExpiry);return d>=31&&d<=90;}).length,
+      urgent:w.filter(e=>{const d=daysLeft(e.visaExpiry);return d>=0&&d<=30;}).length,
+      expired:w.filter(e=>daysLeft(e.visaExpiry)<0).length,
+      checkDue:active.filter(e=>needsChk(e.rtwType)&&e.nextCheckDate&&daysLeft(e.nextCheckDate)<=30).length,
+      noDocs:active.filter(e=>needsChk(e.rtwType)&&!e.docUrl).length,
+    };
+  },[active]);
+
+  const urgentList=useMemo(()=>active.filter(e=>{const d=daysLeft(e.visaExpiry);return d!==null&&d<=90;}).sort((a,b)=>(daysLeft(a.visaExpiry)||0)-(daysLeft(b.visaExpiry)||0)),[active]);
+  const checksDue=useMemo(()=>active.filter(e=>needsChk(e.rtwType)&&e.nextCheckDate&&daysLeft(e.nextCheckDate)<=30).sort((a,b)=>(daysLeft(a.nextCheckDate)||0)-(daysLeft(b.nextCheckDate)||0)),[active]);
+  const reminders=useMemo(()=>active.filter(e=>e.visaExpiry).map(e=>{const d=daysLeft(e.visaExpiry);const tr=[];if(d!==null&&d>=0){if(d<=15)tr.push("15-day");if(d<=30)tr.push("1-month");if(d<=60)tr.push("2-month");if(d<=90)tr.push("3-month");}return{...e,days:d,triggers:tr};}).filter(e=>e.triggers.length>0).sort((a,b)=>(a.days||0)-(b.days||0)),[active]);
+
+  const filtered=useMemo(()=>{
+    let list=employees.filter(e=>{
+      if(search&&!e.name?.toLowerCase().includes(search.toLowerCase())&&!e.rtwType?.toLowerCase().includes(search.toLowerCase()))return false;
+      if(fDept!=="All"&&e.department!==fDept)return false;
+      if(fRtw!=="All"&&e.rtwType!==fRtw)return false;
+      if(fStatus!=="All"&&e.employmentStatus!==fStatus)return false;
+      if(fAlert!=="All"){const lv=aLvl(daysLeft(e.visaExpiry));if(fAlert==="expiring"&&!["expired","critical","urgent","warning","upcoming"].includes(lv))return false;if(fAlert==="expired"&&lv!=="expired")return false;}
+      if(fCheck==="due"&&!(needsChk(e.rtwType)&&e.nextCheckDate&&daysLeft(e.nextCheckDate)<=30))return false;
+      if(fCheck==="nodoc"&&!(needsChk(e.rtwType)&&!e.docUrl&&e.employmentStatus==="Active"))return false;
+      return true;
+    });
+    list=[...list].sort((a,b)=>{
+      let av,bv;
+      if(sortCol==="days"){av=daysLeft(a.visaExpiry)??99999;bv=daysLeft(b.visaExpiry)??99999;}
+      else if(sortCol==="name"){av=a.name?.toLowerCase()||"";bv=b.name?.toLowerCase()||"";}
+      else if(sortCol==="expiry"){av=a.visaExpiry||"9999";bv=b.visaExpiry||"9999";}
+      else if(sortCol==="dept"){av=a.department||"";bv=b.department||"";}
+      else if(sortCol==="check"){av=a.nextCheckDate||"9999";bv=b.nextCheckDate||"9999";}
+      return(av<bv?-1:av>bv?1:0)*(sortDir==="asc"?1:-1);
+    });
+    return list;
+  },[employees,search,fDept,fRtw,fStatus,fAlert,fCheck,sortCol,sortDir]);
+
+  if(!user)return <Login onLogin={setUser}/>;
+
+  const Nav=({id,label,icon,badge})=>(
+    <button onClick={()=>setTab(id)} style={{display:"flex",alignItems:"center",gap:7,padding:"9px 16px",border:"none",borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:tab===id?700:500,background:tab===id?"#1E40AF":"transparent",color:tab===id?"#fff":"#64748B",transition:"all 0.15s"}}>
+      <span>{icon}</span>{label}
+      {badge>0&&<span style={{background:"#EF4444",color:"#fff",borderRadius:10,fontSize:10,padding:"1px 6px",fontWeight:700,minWidth:18,textAlign:"center"}}>{badge}</span>}
+    </button>
+  );
+  const STh=({col,label})=>(
+    <th onClick={()=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}}}
+      style={{padding:"11px 14px",textAlign:"left",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",cursor:"pointer",userSelect:"none",background:sortCol===col?"#EFF6FF":"#F8FAFC",whiteSpace:"nowrap"}}>
+      {label}{sortCol===col?(sortDir==="asc"?" ↑":" ↓"):""}
+    </th>
+  );
+
+  return(
+    <div style={{minHeight:"100vh",background:"#F8FAFC"}}>
+      {/* HEADER */}
+      <div style={{background:"#fff",borderBottom:"1px solid #E2E8F0",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+        <div style={{maxWidth:1500,margin:"0 auto",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:64,gap:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
+            <div style={{width:40,height:40,background:"linear-gradient(135deg,#1E40AF,#3B82F6)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🛡️</div>
+            <div>
+              <div style={{color:"#94A3B8",fontSize:10,letterSpacing:2,textTransform:"uppercase"}}>Visiting Angels West London</div>
+              <div style={{color:"#0F172A",fontSize:16,fontWeight:800,letterSpacing:-0.3}}>Right to Work Tracker</div>
+            </div>
+          </div>
+          <nav style={{display:"flex",gap:4,background:"#F1F5F9",padding:4,borderRadius:12,flexShrink:0}}>
+            <Nav id="dashboard" label="Dashboard" icon="◈"/>
+            <Nav id="staff" label="All Staff" icon="◎"/>
+            <Nav id="reminders" label="Reminders" icon="🔔" badge={reminders.length}/>
+            <Nav id="checks" label="Check Log" icon="🗓" badge={checksDue.length}/>
+            <Nav id="audit" label="Audit Log" icon="📋" badge={0}/>
+            <Nav id="monthly" label="Monthly Check" icon="📋"/>
+          </nav>
+          <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+            {loading&&<span style={{color:"#94A3B8",fontSize:12}}>Loading…</span>}
+            {stats.expired>0&&<div style={{padding:"6px 12px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,color:"#DC2626",fontSize:12,fontWeight:700}}>🚨 {stats.expired} EXPIRED</div>}
+            {isAdmin(user)&&<button onClick={()=>setShowLists(true)} style={{padding:"7px 13px",background:"#F1F5F9",border:"1px solid #E2E8F0",borderRadius:8,fontSize:12,color:"#475569",cursor:"pointer",fontWeight:600}}>⚙ Lists</button>}
+            <button onClick={loadData} style={{padding:"7px 13px",background:"#F1F5F9",border:"1px solid #E2E8F0",borderRadius:8,fontSize:12,color:"#475569",cursor:"pointer",fontWeight:600}}>↻</button>
+            <div style={{textAlign:"right"}}>
+              <div style={{color:"#0F172A",fontSize:13,fontWeight:600}}>{user.name}</div>
+              <button onClick={()=>setUser(null)} style={{background:"none",border:"none",color:"#94A3B8",fontSize:11,cursor:"pointer",padding:0}}>Sign out</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:1500,margin:"0 auto",padding:"28px 24px"}}>
+        {dbErr&&<div style={{padding:"14px 18px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:10,color:"#DC2626",marginBottom:20,fontSize:13}}><strong>Error:</strong> {dbErr}</div>}
+
+        {/* DASHBOARD */}
+        {tab==="dashboard"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:24,gap:16,flexWrap:"wrap"}}>
+              <div>
+                <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Compliance Dashboard</h1>
+                <p style={{color:"#64748B",margin:0,fontSize:13}}>{new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · {employees.length} total staff · ☁️ Supabase</p>
+              </div>
+              <div style={{display:"flex",gap:10}}>
+                {employees.length===0&&!loading&&<button onClick={seedDatabase} disabled={seeding} style={{padding:"10px 20px",background:"#7C3AED",color:"#fff",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer"}}>{seeding?"Seeding…":"⬆ Import 133 Staff"}</button>}
+                <button onClick={()=>setShowNew(true)} style={{padding:"10px 22px",background:"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",boxShadow:"0 4px 12px rgba(30,64,175,0.25)"}}>+ Add Staff Member</button>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:14,marginBottom:28}}>
+              {[
+                {l:"Active Staff",v:stats.total,i:"👥",c:"#1E40AF",bg:"#EFF6FF",bd:"#BFDBFE"},
+                {l:"No Expiry",v:stats.noExpiry,i:"✅",c:"#15803D",bg:"#F0FDF4",bd:"#86EFAC"},
+                {l:"90-Day Window",v:stats.upcoming,i:"📅",c:"#1D4ED8",bg:"#EFF6FF",bd:"#93C5FD"},
+                {l:"Action Needed",v:stats.urgent,i:"⚠️",c:"#B45309",bg:"#FFFBEA",bd:"#FDE68A"},
+                {l:"Expired",v:stats.expired,i:"🚨",c:"#DC2626",bg:"#FEF2F2",bd:"#FECACA"},
+                {l:"Checks Due",v:stats.checkDue,i:"🗓",c:"#7C3AED",bg:"#F5F3FF",bd:"#C4B5FD"},
+                {l:"Missing Docs",v:stats.noDocs,i:"📂",c:"#B45309",bg:"#FFFBEA",bd:"#FDE68A"},
+              ].map(({l,v,i,c,bg,bd})=>(
+                <div key={l} style={{background:bg,border:`1px solid ${bd}`,borderRadius:14,padding:"18px 20px"}}>
+                  <div style={{fontSize:20,marginBottom:8}}>{i}</div>
+                  <div style={{fontSize:32,fontWeight:800,color:c,lineHeight:1}}>{v}</div>
+                  <div style={{color:"#64748B",fontSize:12,marginTop:6,fontWeight:500}}>{l}</div>
+                </div>
+              ))}
+            </div>
+            {/* Priority expiry */}
+            <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",marginBottom:20,boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+              <div style={{padding:"16px 22px",borderBottom:"1px solid #F1F5F9",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>⚠️ Priority — Visa Expiring Within 90 Days</div>
+                <span style={{color:"#94A3B8",fontSize:12}}>{urgentList.length} staff</span>
+              </div>
+              {urgentList.length===0?<div style={{padding:"40px",textAlign:"center",color:"#64748B"}}><div style={{fontSize:32,marginBottom:10}}>✅</div><div style={{fontWeight:600,color:"#0F172A"}}>All clear</div></div>
+              :urgentList.map((e,i)=>{const d=daysLeft(e.visaExpiry);const c=AL[aLvl(d)];return(
+                <div key={e.id} onClick={()=>setSelected(e)} style={{padding:"13px 22px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",background:i%2===0?"#fff":c.row,borderBottom:"1px solid #F1F5F9",flexWrap:"wrap"}}
+                  onMouseEnter={ev=>ev.currentTarget.style.background=c.bg} onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":c.row}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:c.dot,flexShrink:0,display:"inline-block"}}/>
+                  <div style={{flex:1,minWidth:160}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{e.name}</div>
+                    <div style={{color:"#94A3B8",fontSize:12}}>{e.department} · {e.rtwType}</div>
+                  </div>
+                  <div style={{color:"#64748B",fontSize:12}}>Expires {fmt(e.visaExpiry)}</div>
+                  <VisaChip days={d} rtwType={e.rtwType}/>
+                  {e.docUrl?<span style={{fontSize:11,color:"#15803D",fontWeight:600}}>☁️ Doc</span>:<span style={{fontSize:11,color:"#DC2626",fontWeight:600}}>📂 No doc</span>}
+                </div>
+              );})}
+            </div>
+            {/* Checks due */}
+            {checksDue.length>0&&<div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+              <div style={{padding:"16px 22px",borderBottom:"1px solid #F1F5F9",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>🗓 Visa Checks Due Within 30 Days</div>
+                <span style={{color:"#94A3B8",fontSize:12}}>{checksDue.length} staff</span>
+              </div>
+              {checksDue.map((e,i)=>{const cd=daysLeft(e.nextCheckDate);const cc=CL[cLvl(cd)];return(
+                <div key={e.id} onClick={()=>setSelected(e)} style={{padding:"13px 22px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",background:i%2===0?"#fff":"#FAFBFC",borderBottom:"1px solid #F1F5F9",flexWrap:"wrap"}}
+                  onMouseEnter={ev=>ev.currentTarget.style.background="#F0FDF4"} onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":"#FAFBFC"}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:cc.dot,flexShrink:0,display:"inline-block"}}/>
+                  <div style={{flex:1,minWidth:160}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{e.name}</div>
+                    <div style={{color:"#94A3B8",fontSize:12}}>{e.rtwType} · Last checked {fmt(e.lastVisaCheck)||"never"}</div>
+                  </div>
+                  <div style={{color:"#64748B",fontSize:12}}>Next {fmt(e.nextCheckDate)}</div>
+                  <CheckChip days={cd}/>
+                </div>
+              );})}
+            </div>}
+          </div>
+        )}
+
+        {/* ALL STAFF */}
+        {tab==="staff"&&(
+          <div>
+            <div style={{display:"flex",gap:10,marginBottom:18,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{position:"relative",flex:"1 1 220px",minWidth:180}}>
+                <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#94A3B8",fontSize:14}}>🔍</span>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name or RTW type…" style={{width:"100%",padding:"10px 12px 10px 36px",border:"1px solid #E2E8F0",borderRadius:10,fontSize:13,boxSizing:"border-box",outline:"none"}}/>
+              </div>
+              {[[fDept,setFDept,["All",...departments]],[fRtw,setFRtw,["All",...rtwTypes]],[fStatus,setFStatus,["All",...empStatuses]],
+                [fAlert,setFAlert,[["All","All Alerts"],["expiring","Expiring"],["expired","Expired"]]],
+                [fCheck,setFCheck,[["All","All Checks"],["due","Check Due"],["nodoc","Missing Doc"]]]
+              ].map(([val,setter,opts],i)=>(
+                <select key={i} value={val} onChange={e=>setter(e.target.value)} style={{padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:10,fontSize:13,background:"#fff",color:"#334155",cursor:"pointer",minWidth:120}}>
+                  {opts.map(o=>Array.isArray(o)?<option key={o[0]} value={o[0]}>{o[1]}</option>:<option key={o}>{o}</option>)}
+                </select>
+              ))}
+              <span style={{color:"#94A3B8",fontSize:12,whiteSpace:"nowrap"}}>{filtered.length} of {employees.length}</span>
+              <button onClick={()=>setShowNew(true)} style={{padding:"10px 20px",background:"#1E40AF",color:"#fff",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",marginLeft:"auto"}}>+ Add Staff</button>
+            </div>
+            <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:950}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid #E2E8F0"}}>
+                      <STh col="name" label="Name"/>
+                      <STh col="dept" label="Dept"/>
+                      <th style={{padding:"11px 14px",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",background:"#F8FAFC",textAlign:"left"}}>RTW Type</th>
+                      <th style={{padding:"11px 14px",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",background:"#F8FAFC",textAlign:"left"}}>Status</th>
+                      <STh col="expiry" label="Visa Expiry"/>
+                      <STh col="days" label="Days Left"/>
+                      <STh col="check" label="Next Check"/>
+                      <th style={{padding:"11px 14px",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",background:"#F8FAFC",textAlign:"center"}}>Doc ☁️</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((e,i)=>{
+                      const d=daysLeft(e.visaExpiry);const c=AL[aLvl(d)];const sc=empClr(e.employmentStatus);const cd=daysLeft(e.nextCheckDate);
+                      const rowBg=d!==null&&d<=90&&!NO_EXPIRY.includes(e.rtwType)?c.row:i%2===0?"#fff":"#FAFBFC";
+                      return(
+                        <tr key={e.id} onClick={()=>setSelected(e)} style={{borderBottom:"1px solid #F1F5F9",cursor:"pointer",background:rowBg}}
+                          onMouseEnter={ev=>ev.currentTarget.style.background="#EFF6FF"} onMouseLeave={ev=>ev.currentTarget.style.background=rowBg}>
+                          <td style={{padding:"10px 14px",color:"#0F172A",fontSize:13,fontWeight:500}}><span style={{color:"#CBD5E1",fontSize:10,marginRight:5}}>{e.id}</span>{e.name}</td>
+                          <td style={{padding:"10px 14px",color:"#64748B",fontSize:12}}>{e.department}</td>
+                          <td style={{padding:"10px 14px",fontSize:12,maxWidth:160}}>
+                            <div style={{color:"#334155"}}>{e.rtwType}</div>
+                            {e.visaStatus&&<div style={{color:"#94A3B8",fontSize:11}}>{e.visaStatus}</div>}
+                          </td>
+                          <td style={{padding:"10px 14px"}}><Tag tx={sc.tx} bg={sc.bg} bd={sc.bd}>{e.employmentStatus||"Active"}</Tag></td>
+                          <td style={{padding:"10px 14px",color:"#475569",fontSize:12,whiteSpace:"nowrap"}}>{fmt(e.visaExpiry)}</td>
+                          <td style={{padding:"10px 14px",fontWeight:700,fontSize:12,whiteSpace:"nowrap",color:d===null?"#CBD5E1":d<0?"#DC2626":d<=30?"#B45309":"#475569"}}>{d===null?"—":d<0?`${Math.abs(d)}d ago`:`${d}d`}</td>
+                          <td style={{padding:"10px 14px",whiteSpace:"nowrap"}}>{needsChk(e.rtwType)&&e.nextCheckDate?<CheckChip days={cd}/>:<span style={{color:"#E2E8F0",fontSize:11}}>—</span>}</td>
+                          <td style={{padding:"10px 14px",textAlign:"center"}}>
+                            {e.docUrl?<a href={e.docUrl} target="_blank" rel="noreferrer" onClick={ev=>ev.stopPropagation()} title={e.docName||"View"} style={{fontSize:18,textDecoration:"none"}}>☁️</a>
+                            :needsChk(e.rtwType)&&e.employmentStatus==="Active"?<span style={{fontSize:12,color:"#F59E0B",fontWeight:600}}>⚠</span>:<span style={{color:"#E2E8F0",fontSize:12}}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {filtered.length===0&&<div style={{padding:"48px",textAlign:"center",color:"#94A3B8",fontSize:14}}>No records match your filters</div>}
+            </div>
+          </div>
+        )}
+
+        {/* REMINDERS */}
+        {tab==="reminders"&&(
+          <div>
+            <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Reminder Queue</h1>
+            <p style={{color:"#64748B",margin:"0 0 20px",fontSize:13}}>{reminders.length} staff within an automated reminder window</p>
+            <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"18px 22px",marginBottom:20}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:12}}>Automated Reminder Schedule</div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {[["90 days","#3B82F6","#EFF6FF","#DBEAFE","First — apply for extension"],["60 days","#F59E0B","#FFFBEA","#FDE68A","Second — follow up"],["30 days","#EF4444","#FEF2F2","#FECACA","Third — urgent"],["15 days","#7C3AED","#F5F3FF","#DDD6FE","Final — escalate"]].map(([l,c,bg,bd,d])=>(
+                  <div key={l} style={{flex:"1 1 160px",padding:"12px 14px",background:bg,border:`1px solid ${bd}`,borderRadius:10}}>
+                    <div style={{color:c,fontSize:15,fontWeight:800,marginBottom:3}}>{l}</div>
+                    <div style={{color:"#64748B",fontSize:11}}>{d}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {reminders.length===0?<div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"60px",textAlign:"center"}}><div style={{fontSize:40,marginBottom:16}}>✅</div><div style={{fontSize:16,fontWeight:700,color:"#0F172A"}}>No reminders due</div></div>
+            :<div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden"}}>
+              {reminders.map((e,i)=>{const c=AL[aLvl(e.days)];return(
+                <div key={e.id} onClick={()=>setSelected(e)} style={{padding:"14px 22px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",background:i%2===0?"#fff":c.row,borderBottom:"1px solid #F1F5F9",flexWrap:"wrap"}}
+                  onMouseEnter={ev=>ev.currentTarget.style.background=c.bg} onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":c.row}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:c.dot,flexShrink:0,display:"inline-block"}}/>
+                  <div style={{flex:1,minWidth:160}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{e.name}</div>
+                    <div style={{color:"#94A3B8",fontSize:12}}>{e.rtwType} · Expires {fmt(e.visaExpiry)}</div>
+                  </div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{e.triggers.map(t=><span key={t} style={{padding:"3px 9px",background:"#F5F3FF",border:"1px solid #DDD6FE",borderRadius:12,color:"#7C3AED",fontSize:11,fontWeight:600}}>📧 {t}</span>)}</div>
+                  <VisaChip days={e.days} rtwType={e.rtwType}/>
+                  <div style={{color:"#94A3B8",fontSize:11}}>{e.email||"no email set"}</div>
+                </div>
+              );})}
+            </div>}
+          </div>
+        )}
+
+        {/* CHECK LOG */}
+        {tab==="checks"&&(
+          <div>
+            <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Visa Check Log</h1>
+            <p style={{color:"#64748B",margin:"0 0 16px",fontSize:13}}>6-month check schedule for all visa holders. Click a row to update.</p>
+            <div style={{padding:"13px 18px",background:"#F0F9FF",border:"1px solid #BAE6FD",borderRadius:10,marginBottom:20,fontSize:13,color:"#0369A1"}}>
+              💡 After a visa check, open the record, update <strong>Last Visa Check Date</strong> and upload the new document. Next Check Date advances 6 months automatically.
+            </div>
+            <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden"}}>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:800}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid #E2E8F0"}}>
+                      {["Name","RTW Type","Last Check","Next Check Due","Status","Visa Expiry","Doc ☁️"].map(l=>(
+                        <th key={l} style={{padding:"11px 16px",textAlign:"left",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",background:"#F8FAFC",whiteSpace:"nowrap"}}>{l}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {active.filter(e=>needsChk(e.rtwType)).sort((a,b)=>(daysLeft(a.nextCheckDate)||9999)-(daysLeft(b.nextCheckDate)||9999)).map((e,i)=>{
+                      const cd=daysLeft(e.nextCheckDate);const cc=CL[cLvl(cd)];
+                      const rowBg=cd!==null&&cd<=14?cc.bg:i%2===0?"#fff":"#FAFBFC";
+                      return(
+                        <tr key={e.id} onClick={()=>setSelected(e)} style={{borderBottom:"1px solid #F1F5F9",cursor:"pointer",background:rowBg}}
+                          onMouseEnter={ev=>ev.currentTarget.style.background="#EFF6FF"} onMouseLeave={ev=>ev.currentTarget.style.background=rowBg}>
+                          <td style={{padding:"11px 16px",fontWeight:600,color:"#0F172A",fontSize:13}}>{e.name}</td>
+                          <td style={{padding:"11px 16px",color:"#64748B",fontSize:12}}>{e.rtwType}{e.visaStatus?` · ${e.visaStatus}`:""}</td>
+                          <td style={{padding:"11px 16px",color:e.lastVisaCheck?"#475569":"#EF4444",fontSize:12,fontWeight:e.lastVisaCheck?400:600}}>{fmt(e.lastVisaCheck)||"Never"}</td>
+                          <td style={{padding:"11px 16px",color:"#475569",fontSize:12,fontWeight:600}}>{fmt(e.nextCheckDate)}</td>
+                          <td style={{padding:"11px 16px"}}>{cd!==null?<CheckChip days={cd}/>:<span style={{color:"#94A3B8",fontSize:12}}>—</span>}</td>
+                          <td style={{padding:"11px 16px",fontSize:12}}><VisaChip days={daysLeft(e.visaExpiry)} rtwType={e.rtwType}/></td>
+                          <td style={{padding:"11px 16px",textAlign:"center"}}>
+                            {e.docUrl?<a href={e.docUrl} target="_blank" rel="noreferrer" onClick={ev=>ev.stopPropagation()} title={e.docName||"View"} style={{fontSize:18,textDecoration:"none"}}>☁️</a>
+                            :<span style={{fontSize:12,color:"#F59E0B",fontWeight:600}}>⚠ Upload</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* AUDIT LOG */}
+        {tab==="audit"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:22,flexWrap:"wrap",gap:12}}>
+              <div>
+                <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Audit Log</h1>
+                <p style={{color:"#64748B",margin:0,fontSize:13}}>Full history of all changes — who did what and when, with field-level detail.</p>
+              </div>
+              <button onClick={()=>{setAuditLoading(true);sbAudit.fetch(300).then(l=>{setAuditLog(l);setAuditLoading(false);});}} style={{padding:"8px 16px",background:"#F1F5F9",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,cursor:"pointer",color:"#475569",fontWeight:600}}>↻ Refresh</button>
+            </div>
+            {auditLoading?(
+              <div style={{textAlign:"center",padding:"60px",color:"#64748B",fontSize:14}}>Loading audit log…</div>
+            ):auditLog.length===0?(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"60px",textAlign:"center"}}>
+                <div style={{fontSize:36,marginBottom:12}}>📋</div>
+                <div style={{fontSize:15,fontWeight:600,color:"#0F172A",marginBottom:4}}>No audit entries yet</div>
+                <div style={{color:"#64748B",fontSize:13}}>Changes to staff records will appear here</div>
+              </div>
+            ):(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+                {auditLog.map((entry,i)=>{
+                  const actionColors={created:{bg:"#F0FDF4",bd:"#86EFAC",tx:"#166534",icon:"✚"},updated:{bg:"#EFF6FF",bd:"#93C5FD",tx:"#1E40AF",icon:"✎"},archived:{bg:"#FEF2F2",bd:"#FCA5A5",tx:"#991B1B",icon:"✕"},bulk_import:{bg:"#F5F3FF",bd:"#C4B5FD",tx:"#6D28D9",icon:"⬆"}};
+                  const ac=actionColors[entry.action]||{bg:"#F8FAFC",bd:"#E2E8F0",tx:"#64748B",icon:"·"};
+                  const changes=Array.isArray(entry.changes)?entry.changes:[];
+                  return(
+                    <div key={entry.id} style={{padding:"14px 22px",borderBottom:"1px solid #F1F5F9",background:i%2===0?"#fff":"#FAFBFC"}}>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
+                        {/* Action badge */}
+                        <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:12,background:ac.bg,border:`1px solid ${ac.bd}`,color:ac.tx,fontSize:11,fontWeight:700,flexShrink:0}}>
+                          {ac.icon} {entry.action}
+                        </span>
+                        {/* Who / what */}
+                        <div style={{flex:1,minWidth:200}}>
+                          <div style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{entry.employee_name||"—"}</div>
+                          <div style={{fontSize:12,color:"#64748B",marginTop:2}}>
+                            by <strong style={{color:"#334155"}}>{entry.changed_by}</strong> · {new Date(entry.changed_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+                          </div>
+                        </div>
+                      </div>
+                      {/* Field-level changes */}
+                      {changes.length>0&&(
+                        <div style={{marginTop:10,paddingLeft:0}}>
+                          {changes.map((ch,j)=>(
+                            <div key={j} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 10px",background:"#F8FAFC",borderRadius:6,marginBottom:4,fontSize:12,flexWrap:"wrap"}}>
+                              <span style={{color:"#7C3AED",fontWeight:600,minWidth:120}}>{ch.label}</span>
+                              <span style={{color:"#64748B",textDecoration:"line-through",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ch.from===null||ch.from===""?"(empty)":String(ch.from)}</span>
+                              <span style={{color:"#94A3B8",fontSize:10}}>→</span>
+                              <span style={{color:"#0F172A",fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ch.to===null||ch.to===""?"(empty)":String(ch.to)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* MONTHLY CHECK */}
+        {tab==="monthly"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:22,flexWrap:"wrap",gap:12}}>
+              <div>
+                <h1 style={{color:"#0F172A",fontSize:24,fontWeight:800,margin:"0 0 4px",letterSpacing:-0.5}}>Monthly RTW Check</h1>
+                <p style={{color:"#64748B",margin:0,fontSize:13}}>Upload your monthly employee list (Excel or CSV). The tool will match each name against the database and report their RTW status.</p>
+              </div>
+            </div>
+
+            {/* Upload zone */}
+            <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"28px",marginBottom:20,boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+                <div style={{flex:1,minWidth:200}}>
+                  <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:4}}>Upload monthly staff list</div>
+                  <div style={{fontSize:13,color:"#64748B"}}>Excel (.xlsx) or CSV with a column containing employee names. The tool will fuzzy-match names and show RTW status for each person.</div>
+                </div>
+                <label style={{display:"inline-block",padding:"11px 24px",background:"#1E40AF",color:"#fff",borderRadius:10,fontSize:14,fontWeight:700,cursor:"pointer",flexShrink:0,boxShadow:"0 2px 8px rgba(30,64,175,0.2)"}}>
+                  📂 Upload File
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleMonthlyUpload} style={{display:"none"}}/>
+                </label>
+                {monthlyResults.length>0&&(
+                  <button onClick={exportMonthlyCSV}
+                    style={{padding:"11px 20px",background:"#F0FDF4",border:"1px solid #86EFAC",borderRadius:10,color:"#166534",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                    ⬇ Export Report
+                  </button>
+                )}
+              </div>
+              {monthlyError&&<div style={{marginTop:14,padding:"10px 14px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,fontSize:13,color:"#DC2626"}}>{monthlyError}</div>}
+            </div>
+
+            {/* Summary bar */}
+            {monthlyResults.length>0&&(()=>{
+              const counts={valid:0,expiring:0,expired:0,notFound:0,noDoc:0};
+              monthlyResults.forEach(r=>{
+                if(r.status==="not_found") counts.notFound++;
+                else if(r.visaExpired) counts.expired++;
+                else if(r.daysLeft!==null&&r.daysLeft<=90) counts.expiring++;
+                else counts.valid++;
+                if(r.match&&needsChk(r.match.rtwType)&&!r.match.docUrl) counts.noDoc++;
+              });
+              return(
+                <div style={{display:"flex",gap:12,marginBottom:20,flexWrap:"wrap"}}>
+                  {[
+                    {l:"Total Checked",v:monthlyResults.length,c:"#1E40AF",bg:"#EFF6FF",bd:"#BFDBFE"},
+                    {l:"Valid RTW",v:counts.valid,c:"#15803D",bg:"#F0FDF4",bd:"#86EFAC"},
+                    {l:"Expiring ≤90d",v:counts.expiring,c:"#B45309",bg:"#FFFBEA",bd:"#FDE68A"},
+                    {l:"Expired",v:counts.expired,c:"#DC2626",bg:"#FEF2F2",bd:"#FECACA"},
+                    {l:"Not Found",v:counts.notFound,c:"#7C3AED",bg:"#F5F3FF",bd:"#C4B5FD"},
+                    {l:"Missing Doc",v:counts.noDoc,c:"#B45309",bg:"#FFFBEA",bd:"#FDE68A"},
+                  ].map(({l,v,c,bg,bd})=>(
+                    <div key={l} style={{flex:"1 1 120px",background:bg,border:`1px solid ${bd}`,borderRadius:12,padding:"14px 16px"}}>
+                      <div style={{fontSize:26,fontWeight:800,color:c,lineHeight:1}}>{v}</div>
+                      <div style={{color:"#64748B",fontSize:11,marginTop:5,fontWeight:500}}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* Results table */}
+            {monthlyResults.length>0&&(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",minWidth:800}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #E2E8F0"}}>
+                        {["#","Name in File","Matched To","RTW Type","Visa Expiry","Status","Doc","Match Confidence"].map(h=>(
+                          <th key={h} style={{padding:"11px 14px",textAlign:"left",color:"#475569",fontSize:11,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase",background:"#F8FAFC",whiteSpace:"nowrap"}}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyResults.map((r,i)=>{
+                        const rowBg=r.status==="not_found"?"#FFF5FF":r.visaExpired?"#FFF5F5":r.daysLeft!==null&&r.daysLeft<=30?"#FFFDF0":i%2===0?"#fff":"#FAFBFC";
+                        return(
+                          <tr key={i} style={{borderBottom:"1px solid #F1F5F9",background:rowBg}}
+                            onClick={()=>r.match&&setSelected(r.match)}
+                            style={{borderBottom:"1px solid #F1F5F9",background:rowBg,cursor:r.match?"pointer":"default"}}>
+                            <td style={{padding:"10px 14px",color:"#94A3B8",fontSize:12}}>{r.rowNum}</td>
+                            <td style={{padding:"10px 14px",color:"#0F172A",fontSize:13,fontWeight:500}}>{r.inputName}</td>
+                            <td style={{padding:"10px 14px",color:r.match?"#334155":"#DC2626",fontSize:13}}>{r.match?r.match.name:<span style={{fontStyle:"italic"}}>Not found</span>}</td>
+                            <td style={{padding:"10px 14px",color:"#475569",fontSize:12}}>{r.match?r.match.rtwType:"—"}</td>
+                            <td style={{padding:"10px 14px",color:"#475569",fontSize:12,whiteSpace:"nowrap"}}>{r.match?fmt(r.match.visaExpiry):"—"}</td>
+                            <td style={{padding:"10px 14px"}}>
+                              {r.status==="not_found"?<span style={{padding:"3px 9px",borderRadius:12,background:"#F5F3FF",border:"1px solid #C4B5FD",color:"#7C3AED",fontSize:11,fontWeight:600}}>❓ Not found</span>
+                              :r.visaExpired?<span style={{padding:"3px 9px",borderRadius:12,background:"#FEE2E2",border:"1px solid #FCA5A5",color:"#991B1B",fontSize:11,fontWeight:600}}>🚨 EXPIRED</span>
+                              :r.daysLeft!==null&&r.daysLeft<=15?<span style={{padding:"3px 9px",borderRadius:12,background:"#FFEDD5",border:"1px solid #FDBA74",color:"#9A3412",fontSize:11,fontWeight:600}}>⚠ {r.daysLeft}d left</span>
+                              :r.daysLeft!==null&&r.daysLeft<=90?<span style={{padding:"3px 9px",borderRadius:12,background:"#FEF3C7",border:"1px solid #FDE68A",color:"#92400E",fontSize:11,fontWeight:600}}>📅 {r.daysLeft}d left</span>
+                              :<span style={{padding:"3px 9px",borderRadius:12,background:"#DCFCE7",border:"1px solid #86EFAC",color:"#166534",fontSize:11,fontWeight:600}}>✅ Valid</span>}
+                            </td>
+                            <td style={{padding:"10px 14px",textAlign:"center"}}>
+                              {r.match&&needsChk(r.match.rtwType)?(r.match.docUrl?<span style={{fontSize:16}}>☁️</span>:<span style={{fontSize:12,color:"#F59E0B",fontWeight:600}}>⚠ Missing</span>):<span style={{color:"#E2E8F0"}}>—</span>}
+                            </td>
+                            <td style={{padding:"10px 14px"}}>
+                              {r.status==="not_found"?<span style={{color:"#DC2626",fontSize:12}}>—</span>
+                              :<span style={{padding:"2px 8px",borderRadius:10,background:r.confidence>=90?"#DCFCE7":r.confidence>=70?"#FEF3C7":"#FFEDD5",color:r.confidence>=90?"#166534":r.confidence>=70?"#92400E":"#9A3412",fontSize:11,fontWeight:600}}>{r.confidence}%</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {monthlyResults.length===0&&(
+              <div style={{background:"#fff",border:"1px solid #E2E8F0",borderRadius:14,padding:"60px",textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
+                <div style={{fontSize:40,marginBottom:16}}>📋</div>
+                <div style={{fontSize:16,fontWeight:700,color:"#0F172A",marginBottom:8}}>No file uploaded yet</div>
+                <div style={{color:"#64748B",fontSize:13,maxWidth:400,margin:"0 auto"}}>Upload your monthly staff list above. The tool will cross-reference every name against the RTW database and produce a full compliance report.</div>
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>{/* end main content */}
+
+      {/* MODALS */}
+      {selected&&<EmpModal emp={selected} onClose={()=>setSelected(null)} onSave={saveEmployee} onArchive={archiveEmployee} rtwTypes={rtwTypes} departments={departments} empStatuses={empStatuses} user={user}/>}
+      {showNew&&<EmpModal emp={{id:0,name:"",department:departments[0],rtwType:rtwTypes[0],visaExpiry:null,visaStatus:"",employmentStatus:"Active",email:"",notes:"",dateAdded:TODAY,lastVisaCheck:null,nextCheckDate:null,docUrl:"",docName:"",docStoragePath:"",spLink:"",lastUpdatedBy:user.name,lastUpdatedAt:new Date().toISOString()}} onClose={()=>setShowNew(false)} onSave={saveEmployee} onArchive={()=>{}} rtwTypes={rtwTypes} departments={departments} empStatuses={empStatuses} user={user}/>}
+      {showLists&&isAdmin(user)&&<ManageLists rtwTypes={rtwTypes} departments={departments} empStatuses={empStatuses} onSave={saveLists} onClose={()=>setShowLists(false)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
